@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import queue
+import random
 import sys
 import threading
 import time
@@ -237,7 +238,7 @@ class App(ctk.CTk):
         if self.settings.get("show_guide", True) and not self.settings.get("seen_guide", False):
             self.after(700, self._first_run_guide)
         self._drain()
-        self._bg(self._locate_me)           # center on the user's location
+        self._post(lambda: self._set_live(*self._home))   # pulsing starter dot on the random city
         self.after(300, self._install_pinch)  # native pinch-to-zoom
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -329,8 +330,17 @@ class App(ctk.CTk):
         self.map = tkintermapview.TkinterMapView(self.wrap, corner_radius=12)
         self.map.pack(fill="both", expand=True, padx=3, pady=3)
         self.map.set_tile_server(TILE_SERVER, max_zoom=20)
-        self.map.set_position(30.0, 0.0)   # neutral until we locate the user
-        self.map.set_zoom(2)
+        # Start over a random familiar city until the phone connects — never mid-ocean.
+        _start = random.choice([
+            (47.6062, -122.3321),   # Seattle
+            (37.7749, -122.4194),   # San Francisco
+            (40.7128,  -74.0060),   # New York City
+            (25.7617,  -80.1918),   # Miami
+            (48.8566,    2.3522),   # Paris
+        ])
+        self._home = _start
+        self.map.set_position(*_start)
+        self.map.set_zoom(11)
         # Dark placeholders + canvas bg so un-loaded tiles blend with the dark
         # basemap while panning/zooming instead of flashing white.
         self._blank_tile = ImageTk.PhotoImage(
@@ -412,7 +422,7 @@ class App(ctk.CTk):
 
         self._on_speed(1.4)
         self._on_mode("Teleport")
-        self._set_hint("Locating you…")
+        self._set_hint("Click the map or search a place — then Connect your iPhone.")
 
     def _on_mode(self, value: str) -> None:
         self.mode = value.lower()
@@ -1000,17 +1010,7 @@ class App(ctk.CTk):
         self._set_hint("Connect to your iPhone first.")
         return False
 
-    # ---- startup: center on the user's location -------------------------
-
-    def _locate_me(self) -> None:
-        loc = core.my_location()
-        if loc:
-            self._home = loc
-            self._post(lambda: self._center(loc[0], loc[1], 12))
-            self._post(lambda: self._set_live(loc[0], loc[1]))   # always show a pulsing “You”
-            self._set_hint("Click the map or search to drop a pin, then tap “Set location here”.")
-        else:
-            self._set_hint("Couldn’t auto-locate — search for your city to get started.")
+    # ---- map centering --------------------------------------------------
 
     def _center(self, lat: float, lon: float, zoom: int) -> None:
         self.map.set_position(lat, lon)
