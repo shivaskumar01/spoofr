@@ -19,11 +19,11 @@ dist/
 .LSOverride
 
 # Local runtime / settings / logs
-.decoy/
+.spoofr/
 *.log
 
 # Packaged download (build a standalone release instead of committing this)
-website/Decoy.zip
+website/Spoofr.zip
 
 # Tooling locks not used by this project (setup is micromamba/conda — see README)
 uv.lock

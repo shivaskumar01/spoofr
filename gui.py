@@ -1,6 +1,6 @@
-"""Decoy — an iPhone location spoofer (dark customtkinter desktop app).
+"""Spoofr — an iPhone location spoofer (dark customtkinter desktop app).
 
-Open it from the Decoy icon (or `.venv/bin/python gui.py`). It drives
+Open it from the Spoofr icon (or `.venv/bin/python gui.py`). It drives
 your iPhone over a Wi-Fi tunnel; the first time the tunnel is needed it asks for
 your macOS password once to start it, then attaches with no password after.
 
@@ -84,7 +84,7 @@ _DUO = dict(_DUO_PRESETS["Normal"])
 
 
 def _settings_path() -> Path:
-    return Path.home() / ".decoy" / "settings.json"
+    return Path.home() / ".spoofr" / "settings.json"
 
 
 def _load_settings() -> dict:
@@ -186,7 +186,7 @@ def _draw_dot(core, size=26, glow=True):
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Decoy")
+        self.title("Spoofr")
         self.geometry("1060x780")
         self.minsize(860, 600)
         self.configure(fg_color=BG)
@@ -264,7 +264,7 @@ class App(ctk.CTk):
         mark = ctk.CTkFrame(header, fg_color="transparent")
         mark.pack(side="left", padx=(8, 0))
         ctk.CTkLabel(mark, text="◉", font=ctk.CTkFont(size=17), text_color=BLUE).pack(side="left")
-        ctk.CTkLabel(mark, text="Decoy", font=self.f_title, text_color=TEXT).pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(mark, text="Spoofr", font=self.f_title, text_color=TEXT).pack(side="left", padx=(8, 0))
 
         pill = ctk.CTkFrame(header, fg_color=ELEV, corner_radius=15)
         pill.pack(side="left", padx=16, pady=14)
@@ -544,7 +544,7 @@ class App(ctk.CTk):
         self.sidebar = ctk.CTkFrame(self, width=320, corner_radius=0, fg_color=PANEL)
         top = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         top.pack(fill="x", padx=20, pady=(22, 6))
-        ctk.CTkLabel(top, text="Decoy", font=ctk.CTkFont(size=18, weight="bold"),
+        ctk.CTkLabel(top, text="Spoofr", font=ctk.CTkFont(size=18, weight="bold"),
                      text_color=TEXT).pack(side="left")
         ctk.CTkButton(top, text="✕", width=32, height=32, corner_radius=8, fg_color="transparent",
                       hover_color=GHOST, text_color=MUTED, font=ctk.CTkFont(size=15),
@@ -699,9 +699,9 @@ class App(ctk.CTk):
     def _build_about_section(self) -> None:
         f = ctk.CTkFrame(self.menu_content, fg_color="transparent")
         self._sections["about"] = f
-        ctk.CTkLabel(f, text="About Decoy", font=self.f_title, text_color=TEXT,
+        ctk.CTkLabel(f, text="About Spoofr", font=self.f_title, text_color=TEXT,
                      anchor="w").pack(fill="x", pady=(2, 8))
-        text = ("Decoy sets your iPhone’s GPS to anywhere on the map — every app on your "
+        text = ("Spoofr sets your iPhone’s GPS to anywhere on the map — every app on your "
                 "phone then sees that location. No jailbreak.\n\n"
                 "•  This Mac — drive it from this map.\n"
                 "•  iPhone — scan a QR and control it from your phone over Wi-Fi.\n\n"

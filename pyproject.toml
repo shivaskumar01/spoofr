@@ -1,7 +1,7 @@
 [project]
-name = "decoy"
+name = "spoofr"
 version = "1.0.0"
-description = "Decoy — spoof your iPhone's GPS to anywhere on the map (iOS 17–26, no jailbreak)."
+description = "Spoofr — spoof your iPhone's GPS to anywhere on the map (iOS 17–26, no jailbreak)."
 requires-python = ">=3.11"
 dependencies = [
   "pymobiledevice3>=9,<10",

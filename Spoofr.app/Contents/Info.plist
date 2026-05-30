@@ -2,12 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Decoy</string>
-  <key>CFBundleDisplayName</key><string>Decoy</string>
-  <key>CFBundleIdentifier</key><string>com.local.decoy</string>
+  <key>CFBundleName</key><string>Spoofr</string>
+  <key>CFBundleDisplayName</key><string>Spoofr</string>
+  <key>CFBundleIdentifier</key><string>com.local.spoofr</string>
   <key>CFBundleVersion</key><string>1.0</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
-  <key>CFBundleExecutable</key><string>Decoy</string>
+  <key>CFBundleExecutable</key><string>Spoofr</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>

@@ -1,4 +1,4 @@
-"""Decoy — device control, the privileged tunnel, route math.
+"""Spoofr — device control, the privileged tunnel, route math.
 
 pymobiledevice3 9.x is fully async; Tkinter is sync. Every coroutine runs on one
 persistent background loop and the caller blocks until it finishes, so the GUI
@@ -177,7 +177,7 @@ def suggest(query: str, limit: int = 6) -> list[dict]:
     try:
         r = requests.get("https://photon.komoot.io/api/",
                          params={"q": query, "limit": limit, "lang": "en"},
-                         headers={"User-Agent": "Decoy/1.0 (macOS location utility)"}, timeout=4)
+                         headers={"User-Agent": "Spoofr/1.0 (macOS location utility)"}, timeout=4)
         feats = r.json().get("features", [])
     except Exception:
         return []

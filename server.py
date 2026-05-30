@@ -1,4 +1,4 @@
-"""Decoy — Wi-Fi control server (drive it from your phone).
+"""Spoofr — Wi-Fi control server (drive it from your phone).
 
 Run on the Mac (the host) with sudo so it can build the tunnel:
     sudo .venv/bin/python server.py
@@ -227,7 +227,7 @@ def _lan_ip() -> str:
 def main() -> None:
     ip = _lan_ip()
     url = f"http://{ip}:{PORT}/?t={TOKEN}"
-    print("\n  Decoy — open this in Safari on your iPhone")
+    print("\n  Spoofr — open this in Safari on your iPhone")
     print("  (same Wi-Fi as this Mac):\n", flush=True)
     print(f"      {url}\n", flush=True)
     print(f"  (also reachable locally at http://127.0.0.1:{PORT}/?t={TOKEN} )\n", flush=True)

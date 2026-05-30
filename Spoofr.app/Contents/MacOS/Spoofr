@@ -1,7 +1,7 @@
 #!/bin/bash
 # Double-click launches the desktop app (no Terminal window appears). Self-locating:
 # the project folder is three levels up from this script
-# (<project>/Decoy.app/Contents/MacOS/Decoy), so it works wherever the folder lives.
+# (<project>/Spoofr.app/Contents/MacOS/Spoofr), so it works wherever the folder lives.
 DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$DIR" || exit 1
 exec ".venv/bin/python" gui.py

@@ -1,4 +1,4 @@
-"""Decoy — standalone QR launcher (superseded by the app's built-in iPhone tab).
+"""Spoofr — standalone QR launcher (superseded by the app's built-in iPhone tab).
 
 Run `.venv/bin/python launcher.py` for a standalone QR window. Click
 Start: it brings up the phone-control server and shows a QR code + link. Scan the
@@ -95,7 +95,7 @@ def _kill_my_servers() -> None:
 class Launcher(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("Decoy")
+        self.title("Spoofr")
         self.geometry("440x690")
         self.minsize(440, 690)
         self.configure(fg_color=BG)
@@ -110,7 +110,7 @@ class Launcher(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build(self) -> None:
-        ctk.CTkLabel(self, text="◉  Decoy", text_color=TEXT,
+        ctk.CTkLabel(self, text="◉  Spoofr", text_color=TEXT,
                      font=ctk.CTkFont(size=21, weight="bold")).pack(pady=(28, 2))
         ctk.CTkLabel(self, text="Control your iPhone's location from your phone.",
                      text_color=MUTED, font=ctk.CTkFont(size=13)).pack(pady=(0, 18))

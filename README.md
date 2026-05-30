@@ -1,4 +1,4 @@
-# Decoy
+# Spoofr
 
 Set your iPhone's GPS to any point on a map and every iOS app sees the fake location — no jailbreak. Drive it from your Mac, or hand control to your phone's browser over Wi-Fi.
 
@@ -6,7 +6,7 @@ Works on **all iOS 17–26.x** — nothing is hardcoded to a version; it uses Ap
 
 ## How it works
 
-Decoy is a Mac app (`gui.py`) with a **This Mac / iPhone** switch:
+Spoofr is a Mac app (`gui.py`) with a **This Mac / iPhone** switch:
 
 - **This Mac** — a dark map: click to drop a pin and set your location, or drop waypoints and "walk" a route.
 - **iPhone** — shows a QR code; scan it and control everything from your phone's browser (same Wi‑Fi), cable‑free. The Mac stays the host; the phone is the remote.
@@ -20,7 +20,7 @@ Apple's location override is a host→device developer command, so a Mac is alwa
 3. **Tk 8.6 environment** — `tkintermapview` breaks on the Tcl/Tk 9.0 that uv's Python and current Homebrew ship (blank map + crash). Build with micromamba (prebuilt, no admin):
 
    ```bash
-   cd decoy
+   cd spoofr
    curl -Ls https://micro.mamba.pm/api/micromamba/osx-arm64/latest | tar -xj -C /tmp bin/micromamba
    /tmp/bin/micromamba create -y -p .venv -c conda-forge python=3.11 'tk=8.6.*' pip
    .venv/bin/pip install -e ".[dev]"
@@ -35,11 +35,11 @@ Apple's location override is a host→device developer command, so a Mac is alwa
    xattr -dr com.apple.quarantine /opt/homebrew/Caskroom/ipsw
    ```
 
-5. **Cable‑free (optional, one‑time)** — to use iPhone mode without the cable, open Decoy → **⚡ Enable wireless** (or run `.venv/bin/pymobiledevice3 lockdown wifi-connections --state on`) once while plugged in. After that the phone is reachable over Wi‑Fi; unplug for good.
+5. **Cable‑free (optional, one‑time)** — to use iPhone mode without the cable, open Spoofr → **⚡ Enable wireless** (or run `.venv/bin/pymobiledevice3 lockdown wifi-connections --state on`) once while plugged in. After that the phone is reachable over Wi‑Fi; unplug for good.
 
 ## Running it
 
-Open **Decoy** (the app icon in Applications, or double‑click `Decoy.app`). No sudo, no Terminal: it starts the Wi‑Fi tunnel itself, asking for your macOS password **once** — and only if the tunnel isn't already up.
+Open **Spoofr** (the app icon in Applications, or double‑click `Spoofr.app`). No sudo, no Terminal: it starts the Wi‑Fi tunnel itself, asking for your macOS password **once** — and only if the tunnel isn't already up.
 
 - **This Mac:** **Connect** → click the map → **Set location here**. Route mode drops numbered waypoints and walks them at a chosen speed. **Restore GPS** clears the spoof.
 - **iPhone:** click the **iPhone** tab → scan the QR with your Camera → control from Safari.
@@ -50,12 +50,12 @@ The desktop basemap is set near the top of `gui.py` (`TILE_SERVER`); swap `lyrs=
 
 ```
 core.py        # pymobiledevice3 engine: tunnel, mount, set/clear/route
-gui.py         # the Decoy desktop app (map + This Mac / iPhone switch)
+gui.py         # the Spoofr desktop app (map + This Mac / iPhone switch)
 portable.py    # iPhone mode: tunnel elevation, runs the phone server, makes the QR
 server.py      # stdlib HTTP control server for the phone
 web/           # the phone's web UI (MapLibre)
 launcher.py    # superseded standalone QR launcher (kept; the iPhone tab replaces it)
-Decoy.app      # double-click bundle → runs gui.py
+Spoofr.app      # double-click bundle → runs gui.py
 tests/ · pyproject.toml
 ```
 
