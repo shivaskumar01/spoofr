@@ -132,6 +132,7 @@ h1.display{font-size:clamp(58px,10vw,128px);margin-bottom:24px}
 .get-icon{width:88px;height:88px;border-radius:21px;box-shadow:0 20px 50px -16px rgba(59,130,246,.6);margin-bottom:26px}
 .get h2.display{font-size:clamp(44px,7vw,84px);margin-bottom:14px}
 .reqs{margin-top:24px;font-size:11.5px;letter-spacing:.14em;color:var(--muted2)}
+.firstrun{margin-top:10px;font-size:11px;letter-spacing:.06em;color:var(--muted2);opacity:.85}
 
 /* footer */
 .footer{position:relative;z-index:2;border-top:1px solid var(--line);padding:34px 0}

@@ -24,6 +24,10 @@ import sys
 # minimal secure_path that omits Homebrew, so `ipsw` wouldn't be found and the
 # mount would stall. Restore the Homebrew dirs *before* importing pymobiledevice3,
 # which transitively imports plumbum and snapshots PATH for command lookup.
+if getattr(sys, "frozen", False):  # bundled app: find the ipsw binary we ship inside it
+    _bundle_bin = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "bin")
+    if os.path.isdir(_bundle_bin):
+        os.environ["PATH"] = _bundle_bin + os.pathsep + os.environ.get("PATH", "")
 for _brew in ("/opt/homebrew/bin", "/usr/local/bin"):
     if os.path.isdir(_brew) and _brew not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + _brew

@@ -11,6 +11,7 @@ __pycache__/
 .eggs/
 build/
 dist/
+*.spec
 .pytest_cache/
 
 # macOS
@@ -22,8 +23,9 @@ dist/
 .spoofr/
 *.log
 
-# Packaged download (build a standalone release instead of committing this)
-website/Spoofr.zip
+# Note: website/Spoofr-macOS.zip (the ~72MB standalone download) IS committed
+# on purpose, so Netlify serves it. PyInstaller build artifacts (build/, dist/,
+# *.spec) above are not.
 
 # Tooling locks not used by this project (setup is micromamba/conda — see README)
 uv.lock

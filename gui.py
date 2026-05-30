@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import math
 import queue
+import sys
 import threading
 import time
 from pathlib import Path
@@ -1294,4 +1295,16 @@ class App(ctk.CTk):
 
 
 if __name__ == "__main__":
-    App().mainloop()
+    _args = sys.argv[1:]
+    if _args and _args[0] == "--tunneld":
+        # helper mode (launched as root via osascript): build the Wi-Fi tunnel
+        from pymobiledevice3.__main__ import main as _pmd_main
+        sys.argv = ["pymobiledevice3", "remote", "tunneld"]
+        _pmd_main()
+    elif _args and _args[0] == "--server":
+        # helper mode: run the phone-control web server on the given port
+        sys.argv = ["server", _args[1] if len(_args) > 1 else "8765"]
+        import server
+        server.main()
+    else:
+        App().mainloop()

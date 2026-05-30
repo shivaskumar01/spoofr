@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 import core
 
-WEB = Path(__file__).resolve().parent / "web"
+WEB = (Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent) / "web"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765  # override: server.py 8766
 TOKEN = os.environ.get("SPOOFER_TOKEN") or secrets.token_urlsafe(16)  # launcher can pin it
 

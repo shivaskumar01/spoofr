@@ -11,8 +11,10 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -21,6 +23,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PY = HERE / ".venv" / "bin" / "python"
 TUNNELD_PORT = 49151
+
+
+def _helper_cmd(*args: str) -> list[str]:
+    """Command that re-invokes this app in a helper mode (--tunneld / --server).
+    Frozen bundle: the app executable dispatches on argv. Dev: venv python + gui.py."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, *args]
+    return [str(PY), str(HERE / "gui.py"), *args]
 
 
 def lan_ip() -> str:
@@ -57,11 +67,12 @@ def _kill_my_servers() -> None:
     """Stop any non-root server.py we previously started (keep to one)."""
     try:
         import psutil
-        for p in psutil.process_iter(["pid", "name", "cmdline", "uids"]):
+        me = os.getuid()
+        for p in psutil.process_iter(["pid", "cmdline", "uids"]):
             try:
                 cl = " ".join(p.info.get("cmdline") or [])
-                if "server.py" in cl and "python" in (p.info.get("name") or "") \
-                        and p.uids().real == os.getuid() and p.pid != os.getpid():
+                if ("server.py" in cl or "--server" in cl) \
+                        and p.uids().real == me and p.pid != os.getpid():
                     p.kill()
             except Exception:
                 pass
@@ -76,7 +87,8 @@ def ensure_tunnel() -> None:
         return
     if os.geteuid() == 0:
         return  # running as root → core._Tunneld.ensure() will spawn it
-    sh = f"nohup {PY} -m pymobiledevice3 remote tunneld > /tmp/spoofer-tunneld.log 2>&1 &"
+    cmd = " ".join(shlex.quote(c) for c in _helper_cmd("--tunneld"))
+    sh = f"nohup {cmd} > /tmp/spoofr-tunneld.log 2>&1 &"
     ascmd = sh.replace("\\", "\\\\").replace('"', '\\"')
     r = subprocess.run(["osascript", "-e",
                         f'do shell script "{ascmd}" with administrator privileges'],
@@ -109,7 +121,7 @@ class Portable:
         self.port = free_port(8765)
         env = dict(os.environ, SPOOFER_TOKEN=self.token)
         self.proc = subprocess.Popen(
-            [str(PY), str(HERE / "server.py"), str(self.port)],
+            _helper_cmd("--server", str(self.port)),
             env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(48):
             if port_open("127.0.0.1", self.port):
