@@ -1,0 +1,33 @@
+# Virtual environments — machine-specific, never commit
+.venv/
+.venv_old_tk9/
+env/
+venv/
+
+# Python build & cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Local runtime / settings / logs
+.decoy/
+*.log
+
+# Packaged download (build a standalone release instead of committing this)
+website/Decoy.zip
+
+# Tooling locks not used by this project (setup is micromamba/conda — see README)
+uv.lock
+
+# Editors
+.idea/
+.vscode/

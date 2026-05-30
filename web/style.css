@@ -1,0 +1,77 @@
+:root{
+  --bg:#0a0e17; --panel:#111a2c; --elev:#1a2440; --border:#27344f;
+  --blue:#3b82f6; --blue-hi:#5c9bff; --ghost:#1c2740;
+  --text:#eaf0fb; --muted:#8a97b4; --pin:#ff5a5f; --live:#22d3ee;
+  --grey:#6b7687; --green:#2bd07a; --amber:#f4b740; --red:#ff5c5c;
+}
+*{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+html,body{margin:0; height:100%; background:var(--bg); color:var(--text); overflow:hidden;
+  font-family:-apple-system,"SF Pro Text",system-ui,Helvetica,sans-serif;}
+
+#bar{display:flex; align-items:center; gap:12px; height:56px; padding:0 14px;
+  background:var(--panel); border-bottom:1px solid var(--border);}
+.mark{font-weight:700; font-size:15px; white-space:nowrap;}
+.logo{color:var(--blue);}
+.pill{display:flex; align-items:center; gap:7px; background:var(--elev);
+  border-radius:14px; padding:6px 12px; font-size:13px; min-width:0;}
+.dot{color:var(--grey); font-size:11px; flex:none;}
+#status{color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:38vw;}
+.actions{margin-left:auto; display:flex; gap:8px; flex:none;}
+
+.btn{border:0; border-radius:10px; color:#fff; font-weight:700; font-size:13px;
+  padding:9px 14px; cursor:pointer; font-family:inherit;}
+.btn.primary{background:var(--blue);} .btn.primary:active{background:var(--blue-hi);}
+.btn.soft{background:var(--ghost); color:var(--text);}
+.btn.ghost{background:transparent; border:1px solid var(--border); color:var(--text);}
+.btn.sm{padding:7px 12px;}
+
+#controls{display:flex; align-items:center; gap:14px; height:52px; padding:0 14px; background:var(--bg);}
+.seg{display:flex; background:var(--elev); border-radius:9px; padding:3px; flex:none;}
+.seg button{border:0; background:transparent; color:var(--text); font-weight:700; font-size:13px;
+  padding:7px 16px; border-radius:7px; cursor:pointer; font-family:inherit;}
+.seg button.on{background:var(--blue);}
+.route-ctl{display:flex; align-items:center; gap:10px;}
+.route-ctl .lbl{color:var(--muted); font-size:13px;}
+#speed{accent-color:var(--blue); width:120px;}
+#speed-val{font-size:13px; width:58px;}
+
+#map{position:absolute; left:0; right:0; top:108px; bottom:36px;}
+
+#search{position:absolute; top:120px; left:50%; transform:translateX(-50%); z-index:5;
+  display:flex; gap:6px; align-items:center; background:var(--panel); border:1px solid var(--border);
+  border-radius:12px; padding:5px 6px 5px 12px; box-shadow:0 4px 16px rgba(0,0,0,.35);}
+#search input{border:0; background:transparent; color:var(--text); font-size:14px; width:60vw; max-width:300px;
+  outline:none; font-family:inherit;}
+
+.setbtn{position:absolute; bottom:54px; left:50%; transform:translateX(-50%); z-index:5;
+  background:var(--blue); color:#fff; border:0; border-radius:24px; font-weight:700; font-size:15px;
+  padding:13px 24px; cursor:pointer; box-shadow:0 6px 22px rgba(0,0,0,.45); font-family:inherit;}
+
+#hint{position:absolute; left:0; right:0; bottom:0; height:36px; display:flex; align-items:center;
+  padding:0 16px; color:var(--muted); font-size:12px; background:var(--bg);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+
+.hidden{display:none !important;}
+
+/* markers */
+.mk{border-radius:50%; border:2px solid #fff; box-shadow:0 1px 5px rgba(0,0,0,.55);}
+.mk-live{width:18px; height:18px; background:var(--live); box-shadow:0 0 0 6px rgba(34,211,238,.22), 0 1px 5px rgba(0,0,0,.5);}
+.mk-pin{width:16px; height:16px; background:var(--pin);}
+.mk-wp{width:22px; height:22px; background:var(--blue); color:#fff; font-size:12px; font-weight:700;
+  display:flex; align-items:center; justify-content:center;}
+
+/* wizard */
+.wizard{position:absolute; inset:0; z-index:20; background:rgba(5,8,14,.74);
+  display:flex; align-items:center; justify-content:center;}
+.card{background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:24px; max-width:440px; margin:16px;}
+.card h2{margin:0 0 6px; font-size:19px;}
+.card p{color:var(--muted); font-size:13px; margin:0 0 14px; line-height:1.5;}
+.card ol{margin:0 0 16px; padding-left:20px; line-height:1.9; font-size:14px;}
+.wiz-status{color:var(--amber); font-weight:700; font-size:13px; margin-bottom:16px;}
+
+/* MapLibre tweaks */
+.maplibregl-ctrl-attrib{font-size:9px; background:rgba(17,26,44,.7);}
+.maplibregl-ctrl-attrib a{color:var(--muted);}
+.maplibregl-ctrl-group{background:var(--panel); border:1px solid var(--border);}
+.maplibregl-ctrl-group button{background:var(--panel);}
+.maplibregl-ctrl-group button+button{border-top:1px solid var(--border);}

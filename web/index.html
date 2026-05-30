@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Decoy</title>
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+  <link href="style.css" rel="stylesheet">
+</head>
+<body>
+  <header id="bar">
+    <div class="mark"><span class="logo">◉</span>&nbsp;Decoy</div>
+    <div class="pill"><span id="dot" class="dot">●</span><span id="status">Not connected</span></div>
+    <div class="actions">
+      <button id="restore" class="btn ghost">Restore</button>
+      <button id="connect" class="btn primary">Connect</button>
+    </div>
+  </header>
+
+  <div id="controls">
+    <div id="seg" class="seg">
+      <button data-mode="teleport" class="on">Teleport</button>
+      <button data-mode="route">Route</button>
+    </div>
+    <div id="route-ctl" class="route-ctl hidden">
+      <span class="lbl">Speed</span>
+      <input id="speed" type="range" min="0.5" max="35" step="0.1" value="1.4">
+      <span id="speed-val">1.4 m/s</span>
+      <button id="start" class="btn primary sm">Start</button>
+      <button id="stop" class="btn soft sm">Stop</button>
+      <button id="clear" class="btn soft sm">Clear</button>
+    </div>
+  </div>
+
+  <div id="map"></div>
+
+  <div id="search">
+    <input id="q" type="search" placeholder="Search address or city" autocomplete="off" autocorrect="off">
+    <button id="go" class="btn primary sm">Go</button>
+  </div>
+
+  <button id="setbtn" class="setbtn hidden">Set location here</button>
+  <div id="hint"></div>
+
+  <div id="wizard" class="wizard hidden">
+    <div class="card">
+      <h2>One-time setup: Developer Mode</h2>
+      <p>Apple requires Developer Mode to set your location. It’s free, reversible anytime, and takes about 30&nbsp;seconds.</p>
+      <ol>
+        <li>On your iPhone: <b>Settings → Privacy &amp; Security</b></li>
+        <li>Scroll to <b>Developer Mode</b> and turn it On</li>
+        <li>Tap <b>Restart</b> when prompted</li>
+        <li>After reboot, unlock and tap <b>Turn On</b> (enter passcode)</li>
+      </ol>
+      <div id="wiz-status" class="wiz-status">●&nbsp;&nbsp;Waiting for Developer Mode…</div>
+      <button id="wiz-cancel" class="btn ghost">Cancel</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

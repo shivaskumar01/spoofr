@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decoy — be anywhere</title>
+<meta name="description" content="Decoy moves your iPhone's GPS to any point on Earth. Every app believes it. No jailbreak. Free for macOS.">
+<link rel="icon" href="icon.png">
+<meta name="theme-color" content="#0a0e17">
+<meta property="og:title" content="Decoy — be anywhere">
+<meta property="og:description" content="Move your iPhone's GPS to anywhere on Earth. No jailbreak. Free.">
+<meta property="og:image" content="icon.png">
+<script>document.documentElement.classList.add('js')</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="grain" aria-hidden="true"></div>
+
+<header class="nav">
+  <div class="container nav-inner">
+    <a class="brand" href="#top"><span class="logo">◉</span> DECOY</a>
+    <nav class="nav-links" id="navLinks">
+      <a href="#modes">Modes</a>
+      <a href="#caps">Features</a>
+      <a href="#how">How</a>
+    </nav>
+    <a class="btn btn-primary btn-sm nav-dl" href="#get">Get Decoy →</a>
+    <button class="nav-toggle" id="navToggle" aria-label="Menu">☰</button>
+  </div>
+</header>
+
+<main id="top">
+  <!-- HERO -->
+  <section class="hero">
+    <div id="globe" class="globe"></div>
+    <div class="globe-fallback" aria-hidden="true"></div>
+    <div class="hero-grad" aria-hidden="true"></div>
+    <div class="container hero-inner">
+      <div class="kicker"><span class="blink">●</span>&nbsp; GPS&nbsp;SPOOFER &nbsp;·&nbsp; macOS &nbsp;·&nbsp; iOS&nbsp;17–26</div>
+      <h1 class="display">Be<br>anywhere<span class="accent-dot">.</span></h1>
+      <p class="lead">Decoy moves your iPhone's GPS to any point on Earth — and every app on your phone believes it. No jailbreak.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary btn-lg" href="#get">Download — free&nbsp; ↓</a>
+        <a class="btn btn-link" href="#how">How it works&nbsp; →</a>
+      </div>
+      <div class="coords mono"><span class="ll">40.7128°N / 74.0060°W</span><span class="sep">—</span><span>SET&nbsp;TO&nbsp;NEW&nbsp;YORK</span></div>
+    </div>
+  </section>
+
+  <!-- TICKER -->
+  <div class="ticker" aria-hidden="true">
+    <div class="ticker-track">
+      <span class="ti">TOKYO 35.68°N</span><span class="d">◦</span><span class="ti">PARIS 48.86°N</span><span class="d">◦</span><span class="ti">SÃO PAULO 23.56°S</span><span class="d">◦</span><span class="ti">REYKJAVÍK 64.15°N</span><span class="d">◦</span><span class="ti">SYDNEY 33.87°S</span><span class="d">◦</span><span class="ti">CAIRO 30.04°N</span><span class="d">◦</span><span class="ti">NAIROBI 1.29°S</span><span class="d">◦</span><span class="ti">OSLO 59.91°N</span><span class="d">◦</span>
+      <span class="ti">TOKYO 35.68°N</span><span class="d">◦</span><span class="ti">PARIS 48.86°N</span><span class="d">◦</span><span class="ti">SÃO PAULO 23.56°S</span><span class="d">◦</span><span class="ti">REYKJAVÍK 64.15°N</span><span class="d">◦</span><span class="ti">SYDNEY 33.87°S</span><span class="d">◦</span><span class="ti">CAIRO 30.04°N</span><span class="d">◦</span><span class="ti">NAIROBI 1.29°S</span><span class="d">◦</span><span class="ti">OSLO 59.91°N</span><span class="d">◦</span>
+    </div>
+  </div>
+
+  <!-- STATEMENT -->
+  <section class="section statement">
+    <div class="container">
+      <p class="big reveal">Pick a point on the map. <span class="muted">Your iPhone is there.</span> Maps, weather, games, the apps that check where you are — <span class="accent">all of them believe it.</span></p>
+    </div>
+  </section>
+
+  <!-- MODES -->
+  <section class="section" id="modes">
+    <div class="container">
+      <div class="lbl mono reveal">/ TWO WAYS TO DRIVE IT</div>
+      <div class="modes">
+        <article class="mode reveal">
+          <div class="mode-top"><span class="mono idx">01</span><h3>From your Mac</h3></div>
+          <div class="mode-shot"><img src="hero-map.png" alt="Decoy's dark map"><span class="shot-pin"></span><span class="shot-live"><i></i></span></div>
+          <p>A live dark map. Search, click, drop a pin — your location moves the instant you set it.</p>
+        </article>
+        <article class="mode reveal">
+          <div class="mode-top"><span class="mono idx">02</span><h3>From your iPhone</h3></div>
+          <div class="mode-shot qr"><img src="qr.png" alt="Scan to control"><span class="qr-cap mono">SCAN&nbsp;·&nbsp;CONTROL OVER WI-FI</span></div>
+          <p>Scan a QR and steer everything from your phone's browser. Leave the cable behind.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- CAPABILITIES -->
+  <section class="section" id="caps">
+    <div class="container">
+      <div class="lbl mono reveal">/ WHAT IT DOES</div>
+      <ul class="caps">
+        <li class="reveal"><span class="ci mono">01</span><span class="ct">Search any place</span><span class="cd">autocomplete as you type</span><span class="ar">→</span></li>
+        <li class="reveal"><span class="ci mono">02</span><span class="ct">Walk a route</span><span class="cd">waypoints, at any speed</span><span class="ar">→</span></li>
+        <li class="reveal"><span class="ci mono">03</span><span class="ct">Live pulsing location</span><span class="cd">real-time, on the map</span><span class="ar">→</span></li>
+        <li class="reveal"><span class="ci mono">04</span><span class="ct">No jailbreak</span><span class="cd">iOS 17–26 · reversible</span><span class="ar">→</span></li>
+        <li class="reveal"><span class="ci mono">05</span><span class="ct">Free &amp; open</span><span class="cd">no account, no fee</span><span class="ar">→</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- HOW -->
+  <section class="section" id="how">
+    <div class="container">
+      <div class="lbl mono reveal">/ THREE STEPS</div>
+      <div class="timeline">
+        <div class="tl-item reveal"><div class="tl-num mono">1</div><div class="tl-body"><h3>Connect once</h3><p>Plug in, tap Trust, flip on Developer Mode — Decoy walks you through it with a built-in guide.</p></div></div>
+        <div class="tl-item reveal"><div class="tl-num mono">2</div><div class="tl-body"><h3>Pick a spot</h3><p>Search for anywhere on Earth, or just tap the map. Drop a pin.</p></div></div>
+        <div class="tl-item reveal"><div class="tl-num mono">3</div><div class="tl-body"><h3>You're there</h3><p>Set it. Every app on your iPhone now sees the new location — instantly.</p></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- GET -->
+  <section class="section get" id="get">
+    <div class="get-glow" aria-hidden="true"></div>
+    <div class="container get-inner reveal">
+      <img class="get-icon" src="icon.png" alt="Decoy icon">
+      <h2 class="display">Get Decoy.</h2>
+      <p class="lead center">Free, forever. No account, no catch.</p>
+      <a class="btn btn-primary btn-lg" href="https://github.com/shivaskumar01/decoy/releases" target="_blank" rel="noopener">Download for macOS&nbsp; ↓</a>
+      <div class="mono reqs">MACOS 11+ &nbsp;·&nbsp; IPHONE iOS 17–26 &nbsp;·&nbsp; ~2 MIN ONE-TIME SETUP</div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="container footer-inner">
+    <div class="foot-l"><span class="logo">◉</span> DECOY</div>
+    <p class="legal mono">Spoofing is legal for development, privacy &amp; games. Misuse — fraud, or defeating court-ordered monitoring — is on you.</p>
+    <div class="foot-r mono">© 2026</div>
+  </div>
+</footer>
+
+<script src="https://unpkg.com/globe.gl"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://unpkg.com/lenis@1.1.13/dist/lenis.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
