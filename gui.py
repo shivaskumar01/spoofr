@@ -224,6 +224,14 @@ class App(ctk.CTk):
         self._guide_picked = self._guide_set = self._guide_portable = False
         self.menu_open = False
         self._sections = {}
+        self.saved = self.settings.get("saved", [])      # [{name,lat,lon}] favorites
+        self.recent = self.settings.get("recent", [])    # [{lat,lon}] most-recent first
+        self._live_pos = None         # current spoofed (lat,lon) — where the You dot is
+        self._walk_vec = (0.0, 0.0)   # (north, east) unit vector; non-zero while walking
+        self._walk_pos = None         # position the joystick walks from
+        self._walking = False         # walk worker running
+        self._keys_down = set()       # arrow keys currently held
+        self._key_release_after = {}  # per-key auto-repeat debounce ids
 
         self._build()
         if self.settings.get("show_guide", True) and not self.settings.get("seen_guide", False):
@@ -384,6 +392,16 @@ class App(ctk.CTk):
                       hover_color=GHOST, text_color=TEXT, font=zfont,
                       command=lambda: self._zoom_at(-1)).pack(padx=3, pady=(0, 3))
 
+        # Live coordinate readout — top-left, mono.
+        self.coord_readout = ctk.CTkLabel(self.map, text="", text_color=LIVE_HI,
+                                          font=ctk.CTkFont(family="Menlo", size=11),
+                                          fg_color=PANEL, corner_radius=8, bg_color=MAP_BG)
+        # Joystick / walk pad — bottom-left, shown only while connected.
+        self._build_walk_pad()
+        for _k in ("Up", "Down", "Left", "Right"):   # arrow keys walk too (guarded vs. typing)
+            self.bind(f"<KeyPress-{_k}>", self._key_walk_press)
+            self.bind(f"<KeyRelease-{_k}>", self._key_walk_release)
+
         # Hint / action-feedback line.
         self.hint = ctk.CTkLabel(self, text="", text_color=MUTED, anchor="w", font=self.f_hint)
         self.hint.pack(fill="x", padx=22, pady=(2, 12))
@@ -459,6 +477,8 @@ class App(ctk.CTk):
         self.mode_seg.pack_forget()
         self.route_ctl.pack_forget()
         self.set_btn.place_forget()
+        self._show_walk_pad(False)
+        self.coord_readout.place_forget()
         self.connect_btn.configure(state="disabled")
         self.restore_btn.configure(state="disabled")
         self.wrap.pack_forget()
@@ -554,7 +574,7 @@ class App(ctk.CTk):
         nav = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         nav.pack(fill="x", padx=14)
         self.nav_btns = {}
-        for key, label in (("guide", "Getting Started"), ("settings", "Settings"), ("about", "About")):
+        for key, label in (("places", "Places"), ("guide", "Getting Started"), ("settings", "Settings"), ("about", "About")):
             b = ctk.CTkButton(nav, text=label, anchor="w", height=38, corner_radius=9,
                               fg_color="transparent", hover_color=GHOST, text_color=TEXT,
                               font=self.f_btn, command=lambda k=key: self._show_menu_section(k))
@@ -563,10 +583,11 @@ class App(ctk.CTk):
         ctk.CTkFrame(self.sidebar, fg_color=BORDER, height=1).pack(fill="x", padx=16, pady=10)
         self.menu_content = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         self.menu_content.pack(fill="both", expand=True, padx=18, pady=(0, 16))
+        self._build_places_section()
         self._build_guide_section()
         self._build_settings_section()
         self._build_about_section()
-        self._show_menu_section("guide")
+        self._show_menu_section("places")
 
     def _show_menu_section(self, key: str) -> None:
         for k, frame in self._sections.items():
@@ -713,6 +734,216 @@ class App(ctk.CTk):
                      justify="left", wraplength=276).pack(fill="x")
         ctk.CTkLabel(f, text="Version 1.0  ·  iOS 17–26", font=self.f_hint, text_color=MUTED,
                      anchor="w").pack(fill="x", pady=(16, 0))
+
+    # ---- saved / recent places + coordinates ----------------------------
+
+    def _build_places_section(self) -> None:
+        f = ctk.CTkScrollableFrame(self.menu_content, fg_color="transparent",
+                                   scrollbar_button_color=GHOST, scrollbar_button_hover_color=GHOST_HI)
+        self._sections["places"] = f
+        ctk.CTkLabel(f, text="Places", font=self.f_title, text_color=TEXT, anchor="w").pack(fill="x", pady=(2, 2))
+        ctk.CTkLabel(f, text="Save the spots you use; recents are tracked automatically.",
+                     font=self.f_hint, text_color=MUTED, anchor="w", justify="left", wraplength=248).pack(fill="x", pady=(0, 12))
+        self._btn(f, "★  Save current spot", self._save_current_place, "soft", width=248, height=34).pack(fill="x", pady=(0, 14))
+        ctk.CTkLabel(f, text="SAVED", font=ctk.CTkFont(family="Menlo", size=10), text_color=MUTED, anchor="w").pack(fill="x", pady=(0, 4))
+        self.saved_list = ctk.CTkFrame(f, fg_color="transparent")
+        self.saved_list.pack(fill="x")
+        ctk.CTkLabel(f, text="RECENT", font=ctk.CTkFont(family="Menlo", size=10), text_color=MUTED, anchor="w").pack(fill="x", pady=(14, 4))
+        self.recent_list = ctk.CTkFrame(f, fg_color="transparent")
+        self.recent_list.pack(fill="x")
+        self._refresh_places()
+
+    def _refresh_places(self) -> None:
+        if not getattr(self, "saved_list", None):
+            return
+        for w in self.saved_list.winfo_children():
+            w.destroy()
+        for w in self.recent_list.winfo_children():
+            w.destroy()
+        if not self.saved:
+            ctk.CTkLabel(self.saved_list, text="No saved spots yet.", font=self.f_hint, text_color=MUTED, anchor="w").pack(fill="x", pady=2)
+        for i, p in enumerate(self.saved):
+            self._place_row(self.saved_list, p["name"], p["lat"], p["lon"], on_delete=lambda idx=i: self._delete_saved(idx))
+        if not self.recent:
+            ctk.CTkLabel(self.recent_list, text="Nothing recent.", font=self.f_hint, text_color=MUTED, anchor="w").pack(fill="x", pady=2)
+        for p in self.recent:
+            self._place_row(self.recent_list, f"{p['lat']:.4f}, {p['lon']:.4f}", p["lat"], p["lon"],
+                            on_save=lambda la=p["lat"], lo=p["lon"]: self._save_place_named(la, lo))
+
+    def _place_row(self, parent, label, lat, lon, on_delete=None, on_save=None) -> None:
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", pady=1)
+        ctk.CTkButton(row, text=label, anchor="w", height=32, corner_radius=8, fg_color="transparent",
+                      hover_color=GHOST, text_color=TEXT, font=self.f_body,
+                      command=lambda: self._use_place(lat, lon)).pack(side="left", fill="x", expand=True)
+        if on_save:
+            ctk.CTkButton(row, text="★", width=30, height=30, corner_radius=8, fg_color="transparent",
+                          hover_color=GHOST, text_color=MUTED, command=on_save).pack(side="right")
+        if on_delete:
+            ctk.CTkButton(row, text="✕", width=30, height=30, corner_radius=8, fg_color="transparent",
+                          hover_color=GHOST, text_color=MUTED, command=on_delete).pack(side="right")
+
+    def _use_place(self, lat: float, lon: float) -> None:
+        self._close_menu()
+        self._goto(lat, lon)               # fly + stage the pin
+        if self.device:
+            self._commit()                 # one-click: also set it
+
+    def _save_current_place(self) -> None:
+        loc = self.pending or self._live_pos
+        if not loc:
+            self._set_hint("Pick or set a location first, then save it.")
+            return
+        self._save_place_named(loc[0], loc[1])
+
+    def _save_place_named(self, lat: float, lon: float) -> None:
+        dlg = ctk.CTkInputDialog(text=f"Name this spot  ({lat:.4f}, {lon:.4f}):", title="Save place")
+        name = (dlg.get_input() or "").strip()
+        if not name:
+            return
+        self.saved.insert(0, {"name": name, "lat": lat, "lon": lon})
+        self.settings["saved"] = self.saved
+        self._save_settings()
+        self._refresh_places()
+        self._set_hint(f"Saved “{name}”.")
+
+    def _delete_saved(self, idx: int) -> None:
+        if 0 <= idx < len(self.saved):
+            self.saved.pop(idx)
+            self.settings["saved"] = self.saved
+            self._save_settings()
+            self._refresh_places()
+
+    def _add_recent(self, lat: float, lon: float) -> None:
+        self.recent = [r for r in self.recent if abs(r["lat"] - lat) > 1e-4 or abs(r["lon"] - lon) > 1e-4]
+        self.recent.insert(0, {"lat": lat, "lon": lon})
+        self.recent = self.recent[:10]
+        self.settings["recent"] = self.recent
+        self._save_settings()
+        self._refresh_places()
+
+    @staticmethod
+    def _parse_coords(s: str):
+        import re
+        m = re.fullmatch(r"\s*(-?\d{1,3}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)\s*", s)
+        if not m:
+            return None
+        lat, lon = float(m.group(1)), float(m.group(2))
+        return (lat, lon) if -90 <= lat <= 90 and -180 <= lon <= 180 else None
+
+    def _set_readout(self, lat: float, lon: float) -> None:
+        self.coord_readout.configure(text=f"  ◉  {lat:.5f},  {lon:.5f}  ")
+        if self.app_mode == "mac":
+            self.coord_readout.place(relx=0.0, x=16, y=14, anchor="nw")
+
+    # ---- joystick / walk mode --------------------------------------------
+
+    def _build_walk_pad(self) -> None:
+        self.walk_pad = ctk.CTkFrame(self.map, fg_color=PANEL, corner_radius=14,
+                                     border_width=1, border_color=BORDER, bg_color=MAP_BG)
+        grid = ctk.CTkFrame(self.walk_pad, fg_color="transparent")
+        grid.pack(padx=8, pady=8)
+        dirs = [("↖", (1, -1)), ("↑", (1, 0)), ("↗", (1, 1)),
+                ("←", (0, -1)), ("•", (0, 0)), ("→", (0, 1)),
+                ("↙", (-1, -1)), ("↓", (-1, 0)), ("↘", (-1, 1))]
+        for i, (glyph, vec) in enumerate(dirs):
+            stop = vec == (0, 0)
+            cell = ctk.CTkLabel(grid, text=glyph, width=34, height=34, corner_radius=8,
+                                fg_color=("transparent" if stop else ELEV),
+                                text_color=(MUTED if stop else TEXT), font=ctk.CTkFont(size=15))
+            cell.grid(row=i // 3, column=i % 3, padx=2, pady=2)
+            if stop:
+                cell.bind("<Button-1>", lambda e: self._walk_release())
+            else:
+                cell.bind("<ButtonPress-1>", lambda e, v=vec: self._walk_press(v))
+                cell.bind("<ButtonRelease-1>", lambda e: self._walk_release())
+                cell.bind("<Enter>", lambda e, c=cell: c.configure(fg_color=GHOST_HI))
+                cell.bind("<Leave>", lambda e, c=cell: c.configure(fg_color=ELEV))
+
+    def _show_walk_pad(self, show: bool) -> None:
+        if show and self.app_mode == "mac":
+            self.walk_pad.place(relx=0.0, rely=1.0, x=16, y=-16, anchor="sw")
+        else:
+            self.walk_pad.place_forget()
+            self._walk_release()
+
+    def _walk_press(self, vec) -> None:
+        n, e = vec
+        mag = math.hypot(n, e) or 1.0
+        self._walk_vec = (n / mag, e / mag)
+        self._start_walk()
+
+    def _walk_release(self) -> None:
+        self._walk_vec = (0.0, 0.0)
+
+    def _start_walk(self) -> None:
+        if self._walking:
+            return
+        if not self._need_device():
+            self._walk_vec = (0.0, 0.0)
+            return
+        self._walk_pos = self._live_pos or self.map.get_position()
+        self._walking = True
+        self._bg(self._walk_worker)
+
+    def _walk_worker(self) -> None:
+        dt, n = 0.18, 0
+        try:
+            while self._walking and self.device is not None:
+                vx, vy = self._walk_vec
+                if (vx or vy) and self._walk_pos:
+                    lat, lon = self._walk_pos
+                    dist = max(self.speed, 0.3) * dt                      # metres this tick
+                    lat += (vx * dist) / 111320.0
+                    lon += (vy * dist) / (111320.0 * max(0.15, math.cos(math.radians(lat))))
+                    self._walk_pos = (lat, lon)
+                    try:
+                        self.device.set(lat, lon)
+                    except Exception:
+                        pass
+                    self._post(lambda la=lat, lo=lon: self._set_live(la, lo))
+                    n += 1
+                    if n % 3 == 0:                                        # follow the view ~3×/sec
+                        self._post(lambda la=lat, lo=lon: self._safe_center(la, lo))
+                time.sleep(dt)
+        finally:
+            self._walking = False
+
+    def _safe_center(self, lat: float, lon: float) -> None:
+        try:
+            self.map.set_position(lat, lon)
+        except Exception:
+            pass
+
+    def _key_walk_press(self, e) -> None:
+        foc = self.focus_get()
+        if foc is not None and foc.winfo_class() in ("Entry", "TEntry"):
+            return                                                       # typing — let arrows edit text
+        k = e.keysym
+        aid = self._key_release_after.pop(k, None)
+        if aid:
+            self.after_cancel(aid)
+        self._keys_down.add(k)
+        self._update_walk_from_keys()
+
+    def _key_walk_release(self, e) -> None:
+        k = e.keysym
+        self._key_release_after[k] = self.after(60, lambda: self._key_really_release(k))
+
+    def _key_really_release(self, k: str) -> None:
+        self._key_release_after.pop(k, None)
+        self._keys_down.discard(k)
+        self._update_walk_from_keys()
+
+    def _update_walk_from_keys(self) -> None:
+        n = ("Up" in self._keys_down) - ("Down" in self._keys_down)
+        e = ("Right" in self._keys_down) - ("Left" in self._keys_down)
+        if not n and not e:
+            self._walk_vec = (0.0, 0.0)
+        else:
+            mag = math.hypot(n, e)
+            self._walk_vec = (n / mag, e / mag)
+            self._start_walk()
 
     # ---- main-thread UI pump (Tk is not thread-safe) --------------------
 
@@ -934,8 +1165,9 @@ class App(ctk.CTk):
             device = core.connect(on_status=lambda m: self._set_status(m, AMBER))
             self.device = device
             self._set_status(f"Connected  ·  {device.name}  ·  iOS {device.ios}", GREEN)
-            self._set_hint("Connected — the cyan marker is your location. Drop a pin to move it.")
+            self._set_hint("Connected — drop a pin, paste coords, or use the ◉ walk pad (bottom-left).")
             self._post(self._update_guide)
+            self._post(lambda: self._show_walk_pad(True))
             if self._home:
                 self._post(lambda: self._set_live(*self._home))
         except core.DeveloperModeRequired:
@@ -1085,6 +1317,11 @@ class App(ctk.CTk):
         query = self.search_entry.get().strip()
         if not query:
             return
+        c = self._parse_coords(query)
+        if c:
+            self._goto(*c)
+            self._set_hint(f"Jumped to {c[0]:.5f}, {c[1]:.5f}")
+            return
         self._set_hint(f"Searching for “{query}”…")
         self._bg(self._search_worker, query)
 
@@ -1106,7 +1343,9 @@ class App(ctk.CTk):
     # ---- search autocomplete --------------------------------------------
 
     def _on_search_enter(self, event=None) -> None:
-        if self._suggest_items:
+        if self._parse_coords(self.search_entry.get().strip()):
+            self._on_search()
+        elif self._suggest_items:
             self._pick_suggestion(self._suggest_items[0])
         else:
             self._on_search()
@@ -1121,7 +1360,7 @@ class App(ctk.CTk):
             except Exception:
                 pass
             self._suggest_after = None
-        if len(q) < 2:
+        if len(q) < 2 or self._parse_coords(q):
             self._hide_suggestions()
             return
         self._suggest_after = self.after(260, lambda: self._bg(self._suggest_worker, q))
@@ -1199,6 +1438,8 @@ class App(ctk.CTk):
 
     def _set_live(self, lat: float, lon: float) -> None:
         """Move the live (current) location marker — where the iPhone is now."""
+        self._live_pos = (lat, lon)
+        self._set_readout(lat, lon)
         if self.live_marker is None:
             self.live_marker = self.map.set_marker(
                 lat, lon, text="You", icon=self._pulse_frames[self._pulse_i],
@@ -1221,6 +1462,7 @@ class App(ctk.CTk):
         """A set succeeded → the staged point is now the live location."""
         self._set_live(lat, lon)
         self._clear_location_marker()  # drop the red staging pin; live marker stands in
+        self._add_recent(lat, lon)
         self._guide_set = True
         self._update_guide()
 
@@ -1282,6 +1524,7 @@ class App(ctk.CTk):
 
     def _on_close(self) -> None:
         self.stop.set()
+        self._walking = False
         self._wizard_polling = False
         self._portable_poll = False
         self.portable.stop()
