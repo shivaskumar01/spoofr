@@ -238,7 +238,6 @@ class App(ctk.CTk):
         if self.settings.get("show_guide", True) and not self.settings.get("seen_guide", False):
             self.after(700, self._first_run_guide)
         self._drain()
-        self._post(lambda: self._set_live(*self._home))   # pulsing starter dot on the random city
         self.after(300, self._install_pinch)  # native pinch-to-zoom
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -1168,8 +1167,6 @@ class App(ctk.CTk):
             self._set_hint("Connected — drop a pin, paste coords, or use the ◉ walk pad (bottom-left).")
             self._post(self._update_guide)
             self._post(lambda: self._show_walk_pad(True))
-            if self._home:
-                self._post(lambda: self._set_live(*self._home))
         except core.DeveloperModeRequired:
             self._set_status("Developer Mode needed", AMBER)
             self._post(self._start_dev_mode_wizard)
@@ -1436,6 +1433,14 @@ class App(ctk.CTk):
         self.pending = None
         self._update_set_btn()
 
+    def _clear_live(self) -> None:
+        """Hide the live 'You' dot + readout — the phone's position is only known after a set."""
+        if self.live_marker is not None:
+            self.live_marker.delete()
+            self.live_marker = None
+        self._live_pos = None
+        self.coord_readout.place_forget()
+
     def _set_live(self, lat: float, lon: float) -> None:
         """Move the live (current) location marker — where the iPhone is now."""
         self._live_pos = (lat, lon)
@@ -1467,10 +1472,9 @@ class App(ctk.CTk):
         self._update_guide()
 
     def _on_restored(self) -> None:
-        """Spoof cleared → drop staging; show the approximate real location again."""
+        """Spoof cleared → the phone is back on its real GPS, which we can't read — hide the dot."""
         self._clear_location_marker()
-        if self._home:
-            self._set_live(*self._home)
+        self._clear_live()
 
     # ---- route -----------------------------------------------------------
 
