@@ -1,0 +1,10 @@
+# Netlify config — publishes the static marketing site in website/ as-is.
+# No build step: it's plain HTML/CSS/JS, so Netlify just serves the folder.
+[build]
+  publish = "website"
+
+# Single-page site: send any unknown path to the homepage (nice 404 behavior).
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
