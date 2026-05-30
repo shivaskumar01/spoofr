@@ -1774,5 +1774,21 @@ if __name__ == "__main__":
         sys.argv = ["server", _args[1] if len(_args) > 1 else "8765"]
         import server
         server.main()
+    elif _args and _args[0] == "--selftest":
+        # verify every module imports inside the frozen bundle, then exit
+        import importlib
+        sys.argv = sys.argv[:1]      # server.py parses a port from argv at import time
+        _ok = True
+        for _m in ("core", "macui", "portable", "server", "gpxpy", "gpxpy.gpx",
+                   "requests", "customtkinter", "tkintermapview", "objc", "AppKit",
+                   "pymobiledevice3", "pymobiledevice3.__main__"):
+            try:
+                importlib.import_module(_m)
+                print(f"OK   {_m}")
+            except Exception as _e:
+                _ok = False
+                print(f"FAIL {_m}: {_e}")
+        print("SELFTEST", "PASS" if _ok else "FAIL")
+        sys.exit(0 if _ok else 1)
     else:
         App().mainloop()
