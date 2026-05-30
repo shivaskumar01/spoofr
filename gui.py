@@ -233,12 +233,23 @@ class App(ctk.CTk):
         self._walking = False         # walk worker running
         self._keys_down = set()       # arrow keys currently held
         self._key_release_after = {}  # per-key auto-repeat debounce ids
+        self._jitter = bool(self.settings.get("jitter", False))   # idle GPS wobble on?
+        self._jitter_m = float(self.settings.get("jitter_m", 4.0))
+        self.route_loop = False       # repeat the route until stopped
+        self.route_bounce = False     # walk forward then back, ping-pong
+        self.snap_roads = bool(self.settings.get("snap_roads", False))
+        self.route_profile = "walking"  # OSRM profile, set by the speed preset
+        self._anchor = None           # idle point the jitter wobbles around
+        self._closing = False         # set on shutdown so workers exit
+        self._macui = None            # menu-bar / hotkey controller (pyobjc)
 
         self._build()
         if self.settings.get("show_guide", True) and not self.settings.get("seen_guide", False):
             self.after(700, self._first_run_guide)
         self._drain()
+        self._bg(self._jitter_worker)          # idle GPS wobble (no-op until enabled)
         self.after(300, self._install_pinch)  # native pinch-to-zoom
+        self.after(400, self._install_macui)   # menu-bar item + panic hotkey (best-effort)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ---- layout ---------------------------------------------------------
@@ -311,17 +322,27 @@ class App(ctk.CTk):
         self.mode_seg.pack(side="left", pady=11)
 
         self.route_ctl = ctk.CTkFrame(ctl, fg_color="transparent")
-        ctk.CTkLabel(self.route_ctl, text="Speed", text_color=MUTED, font=self.f_body).pack(side="left", padx=(8, 10))
+        self.preset_seg = ctk.CTkSegmentedButton(
+            self.route_ctl, values=["Walk", "Run", "Cycle", "Drive"], command=self._on_preset,
+            fg_color=ELEV, selected_color=BLUE, selected_hover_color=BLUE_HI,
+            unselected_color=ELEV, unselected_hover_color=GHOST_HI, text_color=TEXT,
+            corner_radius=8, height=30, font=self.f_hint, width=212)
+        self.preset_seg.set("Walk")
+        self.preset_seg.pack(side="left", padx=(6, 10))
         self.speed_slider = ctk.CTkSlider(self.route_ctl, from_=0.5, to=35, command=self._on_speed,
-                                          width=160, height=18, fg_color=ELEV,
+                                          width=116, height=18, fg_color=ELEV,
                                           button_color=BLUE, button_hover_color=BLUE_HI, progress_color=BLUE)
         self.speed_slider.set(1.4)
         self.speed_slider.pack(side="left")
-        self.speed_lbl = ctk.CTkLabel(self.route_ctl, text="1.4 m/s", text_color=TEXT, width=62, font=self.f_body)
-        self.speed_lbl.pack(side="left", padx=(10, 0))
-        self._btn(self.route_ctl, "Start", self.on_start, "primary", width=72, height=32).pack(side="left", padx=(14, 4))
-        self._btn(self.route_ctl, "Stop", self.on_stop, "soft", width=64, height=32).pack(side="left", padx=4)
-        self._btn(self.route_ctl, "Clear", self.on_clear_route, "soft", width=64, height=32).pack(side="left", padx=4)
+        self.speed_lbl = ctk.CTkLabel(self.route_ctl, text="1.4 m/s", text_color=TEXT, width=56, font=self.f_body)
+        self.speed_lbl.pack(side="left", padx=(8, 0))
+        self.loop_btn = self._toggle_btn(self.route_ctl, "⟳ Loop", "route_loop")
+        self.loop_btn.pack(side="left", padx=(10, 4))
+        self.bounce_btn = self._toggle_btn(self.route_ctl, "⇄ Bounce", "route_bounce")
+        self.bounce_btn.pack(side="left", padx=4)
+        self._btn(self.route_ctl, "Start", self.on_start, "primary", width=62, height=32).pack(side="left", padx=(10, 4))
+        self._btn(self.route_ctl, "Stop", self.on_stop, "soft", width=54, height=32).pack(side="left", padx=4)
+        self._btn(self.route_ctl, "Clear", self.on_clear_route, "soft", width=54, height=32).pack(side="left", padx=4)
 
         # Map, in a rounded frame for a card-like edge.
         self.wrap = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=14)
@@ -436,6 +457,26 @@ class App(ctk.CTk):
     def _on_speed(self, value) -> None:
         self.speed = float(value)
         self.speed_lbl.configure(text=f"{self.speed:.1f} m/s")
+
+    PRESETS = {"Walk": (1.4, "walking"), "Run": (3.3, "walking"),
+               "Cycle": (6.0, "cycling"), "Drive": (13.5, "driving")}
+
+    def _on_preset(self, name: str) -> None:
+        spd, prof = self.PRESETS.get(name, (1.4, "walking"))
+        self.route_profile = prof
+        self.speed_slider.set(spd)        # .set() doesn't fire the slider command
+        self._on_speed(spd)
+
+    def _toggle_btn(self, parent, text: str, attr: str):
+        b = ctk.CTkButton(parent, text=text, width=78, height=32, corner_radius=8,
+                          fg_color=ELEV, hover_color=GHOST_HI, text_color=MUTED, font=self.f_hint)
+        b.configure(command=lambda: self._flip_toggle(b, attr))
+        return b
+
+    def _flip_toggle(self, btn, attr: str) -> None:
+        val = not getattr(self, attr)
+        setattr(self, attr, val)
+        btn.configure(fg_color=BLUE if val else ELEV, text_color=TEXT if val else MUTED)
 
     # ---- app mode: This Mac (desktop map) ↔ iPhone (portable QR) --------
 
@@ -583,7 +624,7 @@ class App(ctk.CTk):
         nav = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         nav.pack(fill="x", padx=14)
         self.nav_btns = {}
-        for key, label in (("places", "Places"), ("guide", "Getting Started"), ("settings", "Settings"), ("about", "About")):
+        for key, label in (("places", "Places"), ("route", "Route"), ("guide", "Getting Started"), ("settings", "Settings"), ("about", "About")):
             b = ctk.CTkButton(nav, text=label, anchor="w", height=38, corner_radius=9,
                               fg_color="transparent", hover_color=GHOST, text_color=TEXT,
                               font=self.f_btn, command=lambda k=key: self._show_menu_section(k))
@@ -593,6 +634,7 @@ class App(ctk.CTk):
         self.menu_content = ctk.CTkFrame(self.sidebar, fg_color="transparent")
         self.menu_content.pack(fill="both", expand=True, padx=18, pady=(0, 16))
         self._build_places_section()
+        self._build_route_section()
         self._build_guide_section()
         self._build_settings_section()
         self._build_about_section()
@@ -701,6 +743,12 @@ class App(ctk.CTk):
                                           font=self.f_body, text_color=TEXT, progress_color=BLUE)
         self.guide_switch.pack(fill="x", pady=7)
         (self.guide_switch.select if self.settings.get("show_guide", True) else self.guide_switch.deselect)()
+        self.jitter_switch = ctk.CTkSwitch(f, text="GPS jitter (look human)", command=self._toggle_jitter,
+                                           font=self.f_body, text_color=TEXT, progress_color=BLUE)
+        self.jitter_switch.pack(fill="x", pady=7)
+        (self.jitter_switch.select if self._jitter else self.jitter_switch.deselect)()
+        ctk.CTkLabel(f, text="Wobbles a held location a few metres so apps see a natural, noisy GPS fix.",
+                     font=self.f_hint, text_color=MUTED, anchor="w", justify="left", wraplength=276).pack(fill="x", pady=(0, 4))
 
     def _set_map_brightness(self, name: str) -> None:
         self.settings["brightness"] = name
@@ -725,6 +773,11 @@ class App(ctk.CTk):
         self.settings["show_guide"] = bool(self.guide_switch.get())
         self._save_settings()
 
+    def _toggle_jitter(self) -> None:
+        self._jitter = bool(self.jitter_switch.get())
+        self.settings["jitter"] = self._jitter
+        self._save_settings()
+
     # -- About --
 
     def _build_about_section(self) -> None:
@@ -743,6 +796,32 @@ class App(ctk.CTk):
                      justify="left", wraplength=276).pack(fill="x")
         ctk.CTkLabel(f, text="Version 1.0  ·  iOS 17–26", font=self.f_hint, text_color=MUTED,
                      anchor="w").pack(fill="x", pady=(16, 0))
+
+    # -- Route options (snap-to-roads + GPX) --
+
+    def _build_route_section(self) -> None:
+        f = ctk.CTkScrollableFrame(self.menu_content, fg_color="transparent",
+                                   scrollbar_button_color=GHOST, scrollbar_button_hover_color=GHOST_HI)
+        self._sections["route"] = f
+        ctk.CTkLabel(f, text="Route", font=self.f_title, text_color=TEXT, anchor="w").pack(fill="x", pady=(2, 2))
+        ctk.CTkLabel(f, text="Drop waypoints on the map in Route mode, then walk them. Set pace with the presets.",
+                     font=self.f_hint, text_color=MUTED, anchor="w", justify="left", wraplength=248).pack(fill="x", pady=(0, 12))
+        self.snap_switch = ctk.CTkSwitch(f, text="Snap route to roads", command=self._toggle_snap,
+                                         font=self.f_body, text_color=TEXT, progress_color=BLUE)
+        self.snap_switch.pack(fill="x", pady=7)
+        (self.snap_switch.select if self.snap_roads else self.snap_switch.deselect)()
+        ctk.CTkLabel(f, text="Follows real streets between waypoints, using the speed preset’s profile (walk/cycle/drive).",
+                     font=self.f_hint, text_color=MUTED, anchor="w", justify="left", wraplength=248).pack(fill="x", pady=(0, 16))
+        ctk.CTkLabel(f, text="GPX", font=ctk.CTkFont(family="Menlo", size=10), text_color=MUTED, anchor="w").pack(fill="x", pady=(0, 4))
+        self._btn(f, "Import GPX…", self._import_gpx, "soft", width=248, height=34).pack(fill="x", pady=3)
+        self._btn(f, "Export route…", self._export_gpx, "soft", width=248, height=34).pack(fill="x", pady=3)
+        ctk.CTkLabel(f, text="Import a recorded track to replay it; export the waypoints you’ve dropped.",
+                     font=self.f_hint, text_color=MUTED, anchor="w", justify="left", wraplength=248).pack(fill="x", pady=(6, 0))
+
+    def _toggle_snap(self) -> None:
+        self.snap_roads = bool(self.snap_switch.get())
+        self.settings["snap_roads"] = self.snap_roads
+        self._save_settings()
 
     # ---- saved / recent places + coordinates ----------------------------
 
@@ -778,6 +857,7 @@ class App(ctk.CTk):
         for p in self.recent:
             self._place_row(self.recent_list, f"{p['lat']:.4f}, {p['lon']:.4f}", p["lat"], p["lon"],
                             on_save=lambda la=p["lat"], lo=p["lon"]: self._save_place_named(la, lo))
+        self._refresh_macui()      # keep the menu-bar's saved list in sync
 
     def _place_row(self, parent, label, lat, lon, on_delete=None, on_save=None) -> None:
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -917,10 +997,37 @@ class App(ctk.CTk):
                 time.sleep(dt)
         finally:
             self._walking = False
+            if self._walk_pos:
+                self._anchor = self._walk_pos   # jitter resumes where the walk stopped
 
     def _safe_center(self, lat: float, lon: float) -> None:
         try:
             self.map.set_position(lat, lon)
+        except Exception:
+            pass
+
+    def _jitter_worker(self) -> None:
+        """While idle-spoofed with jitter enabled, wobble the held fix every
+        ~1.5s so apps see a natural, slightly noisy GPS instead of a frozen pixel."""
+        while not self._closing:
+            try:
+                busy = self._walking or (self.player and self.player.is_alive())
+                if self._jitter and self.device is not None and self._anchor and not busy:
+                    jlat, jlon = core.jitter(self._anchor[0], self._anchor[1], self._jitter_m)
+                    try:
+                        self.device.set(jlat, jlon)
+                    except Exception:
+                        pass
+                    self._post(lambda la=jlat, lo=jlon: self._nudge_live(la, lo))
+            except Exception:
+                pass
+            time.sleep(1.5)
+
+    def _nudge_live(self, lat: float, lon: float) -> None:
+        """Move just the live dot for the jitter wobble (readout stays on the anchor)."""
+        try:
+            if self.live_marker is not None:
+                self.live_marker.set_position(lat, lon)
         except Exception:
             pass
 
@@ -1194,6 +1301,45 @@ class App(ctk.CTk):
                 self._set_hint(f"Restore failed: {e}")
         self._bg(work)
 
+    # ---- menu-bar item + panic hotkey (native, best-effort) -------------
+
+    def _install_macui(self) -> None:
+        try:
+            import macui
+            self._macui = macui.install(self)
+        except Exception:
+            self._macui = None
+
+    def _refresh_macui(self) -> None:
+        if self._macui:
+            try:
+                self._macui.rebuildMenu()
+            except Exception:
+                pass
+
+    def restore_real_gps(self) -> None:
+        """Panic / menu-bar restore — clear the spoof now, no dialog."""
+        self.stop.set()
+        self._walking = False
+        if not self.device:
+            self._set_hint("Not connected — nothing to restore.")
+            return
+
+        def work():
+            try:
+                self.device.clear()
+                self._post(self._on_restored)
+                self._set_hint("Real GPS restored (panic). iOS reacquires in a few seconds.")
+            except Exception as e:
+                self._set_hint(f"Restore failed: {e}")
+        self._bg(work)
+
+    def _raise_window(self) -> None:
+        try:
+            self.deiconify(); self.lift(); self.focus_force()
+        except Exception:
+            pass
+
     # ---- Developer Mode onboarding wizard -------------------------------
 
     def _start_dev_mode_wizard(self) -> None:
@@ -1466,6 +1612,7 @@ class App(ctk.CTk):
     def _on_committed(self, lat: float, lon: float) -> None:
         """A set succeeded → the staged point is now the live location."""
         self._set_live(lat, lon)
+        self._anchor = (lat, lon)      # jitter wobbles around the spot we just set
         self._clear_location_marker()  # drop the red staging pin; live marker stands in
         self._add_recent(lat, lon)
         self._guide_set = True
@@ -1475,6 +1622,7 @@ class App(ctk.CTk):
         """Spoof cleared → the phone is back on its real GPS, which we can't read — hide the dot."""
         self._clear_location_marker()
         self._clear_live()
+        self._anchor = None            # nothing to wobble once the spoof is cleared
 
     # ---- route -----------------------------------------------------------
 
@@ -1501,14 +1649,34 @@ class App(ctk.CTk):
         self.player.start()
 
     def _play_worker(self) -> None:
+        pts = list(self.points)
+        if self.snap_roads:
+            self._set_hint("Snapping the route to roads…")
+            snapped = core.snap_to_roads(self.points, self.route_profile)
+            if len(snapped) >= 2:
+                pts = snapped
+                self._post(lambda p=list(snapped): self._show_snapped_path(p))
         def on_step(i, total, lat, lon):
             self._set_hint(f"Walking…  {i}/{total}   ({lat:.5f}, {lon:.5f})")
             self._post(lambda la=lat, lo=lon: self._set_live(la, lo))
         try:
-            self.device.play_route(self.points, self.speed, self.stop, on_step=on_step)
+            self.device.play_route(pts, self.speed, self.stop, on_step=on_step,
+                                   loop=self.route_loop, bounce=self.route_bounce)
             self._set_hint("Route stopped." if self.stop.is_set() else "Route complete.")
         except Exception as e:
             self._set_hint(f"Route failed: {e}")
+        finally:
+            if self._live_pos:
+                self._anchor = self._live_pos
+
+    def _show_snapped_path(self, pts) -> None:
+        """Redraw the route polyline along the snapped (road) geometry."""
+        try:
+            if self.path:
+                self.path.delete()
+            self.path = self.map.set_path(pts, color=BLUE, width=5)
+        except Exception:
+            pass
 
     def on_stop(self) -> None:
         self.stop.set()
@@ -1524,11 +1692,64 @@ class App(ctk.CTk):
         self.points.clear()
         self._set_hint("Waypoints cleared.")
 
+    def _import_gpx(self) -> None:
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            title="Import GPX track", filetypes=[("GPX track", "*.gpx"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            pts = core.parse_gpx(path)
+        except Exception as e:
+            self._set_hint(f"Couldn’t read that GPX: {e}")
+            return
+        self._load_route(pts)
+        self._close_menu()
+        self._set_hint(f"Loaded {len(pts)} points from GPX. Press Start to walk it.")
+
+    def _load_route(self, pts) -> None:
+        """Replace the current route with `pts`, draw it, and switch to Route mode."""
+        self.on_clear_route()
+        self.points = [tuple(p) for p in pts]
+        try:
+            self.path = self.map.set_path(self.points, color=BLUE, width=5)
+            for label, (la, lo) in (("Start", self.points[0]), ("End", self.points[-1])):
+                self.markers.append(self.map.set_marker(
+                    la, lo, text=label, icon=self.icon_wp, icon_anchor="center", text_color=TEXT))
+        except Exception:
+            pass
+        self._center(self.points[0][0], self.points[0][1], 14)
+        self.mode_seg.set("Route")
+        self._on_mode("Route")
+
+    def _export_gpx(self) -> None:
+        if len(self.points) < 2:
+            self._set_hint("Drop at least two waypoints (or import a track) to export.")
+            return
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(
+            title="Export route as GPX", defaultextension=".gpx", initialfile="spoofr-route.gpx",
+            filetypes=[("GPX track", "*.gpx")])
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(core.build_gpx(self.points, "Spoofr route"))
+            self._set_hint(f"Exported {len(self.points)} points → {path}")
+        except Exception as e:
+            self._set_hint(f"Export failed: {e}")
+
     # ---- shutdown --------------------------------------------------------
 
     def _on_close(self) -> None:
+        self._closing = True
         self.stop.set()
         self._walking = False
+        if self._macui:
+            try:
+                self._macui.teardown()
+            except Exception:
+                pass
         self._wizard_polling = False
         self._portable_poll = False
         self.portable.stop()

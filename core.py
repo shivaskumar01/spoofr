@@ -34,6 +34,7 @@ for _brew in ("/opt/homebrew/bin", "/usr/local/bin"):
 
 import asyncio
 import math
+import random
 import shutil
 import socket
 import subprocess
@@ -235,20 +236,30 @@ class Device:
         _loop.run(self._location.clear())
 
     def play_route(self, points, speed_mps, stop: threading.Event,
-                   dt: float = 1.0, on_step: Optional[Callable] = None) -> None:
+                   dt: float = 1.0, on_step: Optional[Callable] = None,
+                   loop: bool = False, bounce: bool = False) -> None:
         """Walk `points` at speed_mps, one fix every `dt` seconds.
 
-        Returns when the route finishes or `stop` is set. Call from a worker
-        thread — it sleeps between fixes.
+        With `bounce` the path is walked forward then back; with `loop` (or
+        `bounce`) it repeats until `stop` is set, otherwise it returns at the
+        end. Call from a worker thread — it sleeps between fixes.
         """
         path = route_points(points, speed_mps, dt)
-        for i, (lat, lon) in enumerate(path, 1):
-            if stop.is_set():
-                return
-            self.set(lat, lon)
-            if on_step:
-                on_step(i, len(path), lat, lon)
-            if stop.wait(dt):
+        if not path:
+            return
+        seq = path + path[-2::-1] if bounce else path   # forward, then back
+        repeat = loop or bounce
+        total = len(seq)
+        while True:
+            for i, (lat, lon) in enumerate(seq, 1):
+                if stop.is_set():
+                    return
+                self.set(lat, lon)
+                if on_step:
+                    on_step(i, total, lat, lon)
+                if stop.wait(dt):
+                    return
+            if not repeat:
                 return
 
     def close(self) -> None:
@@ -472,3 +483,74 @@ def route_points(points, speed_mps: float, dt: float = 1.0):
                 f = i / steps
                 path.append((a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f))
     return path
+
+
+def jitter(lat: float, lon: float, radius_m: float = 4.0) -> tuple[float, float]:
+    """Nudge a point by a random offset within `radius_m` metres, so a held
+    position wobbles like a real GPS fix instead of sitting perfectly still."""
+    r = radius_m * math.sqrt(random.random())          # uniform over the disc
+    theta = random.uniform(0.0, 2.0 * math.pi)
+    dlat = (r * math.cos(theta)) / 111_320.0
+    dlon = (r * math.sin(theta)) / (111_320.0 * max(0.15, math.cos(math.radians(lat))))
+    return lat + dlat, lon + dlon
+
+
+def snap_to_roads(points, profile: str = "driving", timeout: float = 8.0):
+    """Replace the straight segments between waypoints with the real road
+    geometry (OSRM public server). Returns the densified [(lat,lon),…]; on any
+    failure returns `points` unchanged so routing still works. Blocking — call
+    from a worker thread."""
+    pts = [tuple(p) for p in points]
+    if len(pts) < 2:
+        return pts
+    import requests
+    coords = ";".join(f"{lon},{lat}" for lat, lon in pts)
+    url = f"https://router.project-osrm.org/route/v1/{profile}/{coords}"
+    try:
+        r = requests.get(url, params={"overview": "full", "geometries": "geojson"},
+                         headers={"User-Agent": "Spoofr/1.0 (macOS location utility)"},
+                         timeout=timeout)
+        data = r.json()
+        if data.get("code") == "Ok" and data.get("routes"):
+            geo = data["routes"][0]["geometry"]["coordinates"]   # [lon, lat]
+            snapped = [(c[1], c[0]) for c in geo if len(c) >= 2]
+            if len(snapped) >= 2:
+                return snapped
+    except Exception:
+        pass
+    return pts
+
+
+def parse_gpx(path: str):
+    """Read a .gpx file → [(lat,lon),…] from its first track (else route, else
+    waypoints). Raises SpooferError if there's nothing usable."""
+    import gpxpy
+    with open(path, "r", encoding="utf-8") as fh:
+        gpx = gpxpy.parse(fh)
+    pts: list[tuple[float, float]] = []
+    for trk in gpx.tracks:
+        for seg in trk.segments:
+            pts += [(p.latitude, p.longitude) for p in seg.points]
+    if not pts:
+        for rte in gpx.routes:
+            pts += [(p.latitude, p.longitude) for p in rte.points]
+    if not pts:
+        pts += [(w.latitude, w.longitude) for w in gpx.waypoints]
+    if len(pts) < 2:
+        raise SpooferError("That GPX file has no usable track (need at least two points).")
+    return pts
+
+
+def build_gpx(points, name: str = "Spoofr route") -> str:
+    """Serialize [(lat,lon),…] to a GPX 1.1 XML string (one track)."""
+    import gpxpy
+    import gpxpy.gpx
+    gpx = gpxpy.gpx.GPX()
+    gpx.creator = "Spoofr"
+    trk = gpxpy.gpx.GPXTrack(name=name)
+    gpx.tracks.append(trk)
+    seg = gpxpy.gpx.GPXTrackSegment()
+    trk.segments.append(seg)
+    for lat, lon in points:
+        seg.points.append(gpxpy.gpx.GPXTrackPoint(latitude=lat, longitude=lon))
+    return gpx.to_xml()

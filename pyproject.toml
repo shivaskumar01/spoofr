@@ -8,6 +8,9 @@ dependencies = [
   "tkintermapview>=1.29",
   "geocoder>=1.38",
   "customtkinter>=5.2",
+  "gpxpy>=1.6",
+  "segno>=1.6",
+  "requests>=2.28",
   "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
 ]
 
@@ -19,4 +22,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["core", "gui", "portable", "server"]
+py-modules = ["core", "gui", "macui", "portable", "server"]
