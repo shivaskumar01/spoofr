@@ -45,7 +45,7 @@ class Segmented(QFrame):
             f = b.font(); f.setPointSize(font_pt); f.setBold(True); b.setFont(f)
             b.setStyleSheet(
                 f"QPushButton {{ background: transparent; color: {theme.MUTED}; border: none;"
-                f" border-radius: {(height - 6) // 2}px; padding: 0 14px; }}"
+                f" border-radius: {(height - 6) // 2}px; padding: 0 11px; }}"
                 f"QPushButton:checked {{ background: {theme.BLUE}; color: #ffffff; }}"
                 f"QPushButton:hover:!checked {{ color: {theme.TEXT}; }}")
             self._group.addButton(b)

@@ -14,12 +14,12 @@ import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
-    QWidget,
+    QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QVBoxLayout, QWidget,
 )
 
-from . import geo, theme
-from .markers import PulseMarker, make_pin
+from . import geo, route, theme
+from .markers import PulseMarker, make_pin, make_waypoint
 from .tilemap import TileMap
 
 _M_PER_DEG = 111_320.0
@@ -78,6 +78,8 @@ class MapPanel(QFrame):
     _geocodeFailed = Signal(str)
     _walkStep = Signal(float, float)
     _jitterStep = Signal(float, float)
+    _routeSnapped = Signal(object)
+    _routeDone = Signal(str)
 
     def __init__(self, bridge, parent=None):
         super().__init__(parent)
@@ -98,8 +100,8 @@ class MapPanel(QFrame):
         self._anchor = None             # idle point the jitter wobbles around
         self._suggest_items: list[dict] = []
 
-        # walking / jitter state
-        self.walk_speed = 1.4           # m/s (Phase 3b's route slider feeds this)
+        # movement state (shared by walk pad + route)
+        self.speed = 1.4                # m/s
         self._walk_vec = (0.0, 0.0)     # (north, east) unit vector
         self._walk_pos = None
         self._walking = False
@@ -109,6 +111,18 @@ class MapPanel(QFrame):
         self._jitter_m = 4.0
         self._pulse = True
         self._closing = False
+
+        # route state
+        self.mode = "teleport"          # "teleport" | "route"
+        self.profile = "walking"        # OSRM profile from the speed preset
+        self.loop = False
+        self.bounce = False
+        self.snap = False
+        self.points: list[tuple[float, float]] = []   # waypoints
+        self._wp_ovs: list = []         # waypoint marker overlays
+        self._path_ov = None            # route polyline overlay
+        self._playing = False
+        self._route_stop = threading.Event()
 
         self._build_floating()
         self._build_walk_pad()
@@ -186,6 +200,8 @@ class MapPanel(QFrame):
         self._geocodeFailed.connect(lambda m: self.hint.emit(m))
         self._walkStep.connect(self._on_walk_step)
         self._jitterStep.connect(self._on_jitter_step)
+        self._routeSnapped.connect(self._redraw_path)
+        self._routeDone.connect(self._on_route_done)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -208,6 +224,9 @@ class MapPanel(QFrame):
     # ---- teleport: stage a pin, then commit -----------------------------
 
     def _on_click(self, lat: float, lon: float):
+        if self.mode == "route":
+            self._add_waypoint(lat, lon)
+            return
         self.pending = (lat, lon)
         if self._pin_ov is None:
             self._pin_ov = self.map.add_marker(lat, lon, self._pin, anchor="s")
@@ -324,7 +343,7 @@ class MapPanel(QFrame):
             vx, vy = self._walk_vec
             if (vx or vy) and self._walk_pos:
                 lat, lon = self._walk_pos
-                dist = max(self.walk_speed, 0.3) * dt
+                dist = max(self.speed, 0.3) * dt
                 lat += (vx * dist) / _M_PER_DEG
                 lon += (vy * dist) / (_M_PER_DEG * max(0.15, math.cos(math.radians(lat))))
                 self._walk_pos = (lat, lon)
@@ -388,6 +407,160 @@ class MapPanel(QFrame):
 
     def set_brightness(self, name: str):
         self.map.set_brightness(name)
+
+    # ---- route mode -----------------------------------------------------
+
+    def set_mode(self, mode: str):
+        self.mode = mode
+        if mode == "route":
+            self.set_btn.hide()
+            self.hint.emit("Route mode — click the map to drop waypoints, then press Start.")
+        else:
+            if self.pending:
+                self.set_btn.show(); self.set_btn.raise_()
+            self.hint.emit("Teleport — click the map or search, then “Set location here”.")
+
+    def set_speed(self, mps: float):
+        self.speed = float(mps)
+
+    def set_preset(self, profile: str):
+        self.profile = profile
+
+    def set_loop(self, on: bool):
+        self.loop = bool(on)
+
+    def set_bounce(self, on: bool):
+        self.bounce = bool(on)
+
+    def set_snap(self, on: bool):
+        self.snap = bool(on)
+
+    def _add_waypoint(self, lat: float, lon: float):
+        self.points.append((lat, lon))
+        ov = self.map.add_marker(lat, lon, make_waypoint(len(self.points)), anchor="center", z=8)
+        self._wp_ovs.append(ov)
+        self._redraw_path(self.points)
+        self.hint.emit(f"{len(self.points)} waypoint(s). Press Start to walk the route.")
+
+    def _redraw_path(self, pts):
+        if self._path_ov is not None:
+            self.map.remove_overlay(self._path_ov)
+            self._path_ov = None
+        if len(pts) >= 2:
+            self._path_ov = self.map.add_path(pts, color=theme.BLUE, width=5)
+
+    def clear_route(self):
+        self.stop_route()
+        for ov in self._wp_ovs:
+            self.map.remove_overlay(ov)
+        self._wp_ovs.clear()
+        self.points.clear()
+        if self._path_ov is not None:
+            self.map.remove_overlay(self._path_ov)
+            self._path_ov = None
+        self.hint.emit("Waypoints cleared.")
+
+    def start_route(self):
+        if self.bridge.device is None:
+            self.hint.emit("Connect to your iPhone first.")
+            return
+        if len(self.points) < 2:
+            self.hint.emit("Drop at least two waypoints first.")
+            return
+        if self._playing:
+            return
+        self._route_stop.clear()
+        self._playing = True
+        self._following = True
+        threading.Thread(target=self._route_worker, args=(list(self.points),), daemon=True).start()
+
+    def stop_route(self):
+        self._route_stop.set()
+        self._playing = False
+        self._following = False
+
+    def _route_worker(self, pts):
+        try:
+            if self.snap:
+                self.hint.emit("Snapping the route to roads…")
+                snapped = route.snap_to_roads(pts, self.profile)
+                if len(snapped) >= 2:
+                    pts = snapped
+                    self._routeSnapped.emit(list(snapped))
+            path = route.route_points(pts, max(self.speed, 0.3), dt=1.0)
+            if not path:
+                self._routeDone.emit("Nothing to walk.")
+                return
+            seq = path + path[-2::-1] if self.bounce else path   # forward, then back
+            repeat = self.loop or self.bounce
+            total = len(seq)
+            dev = self.bridge.device
+            while True:
+                for i, (lat, lon) in enumerate(seq, 1):
+                    if self._route_stop.is_set() or self.bridge.device is None:
+                        self._routeDone.emit("Route stopped.")
+                        return
+                    try:
+                        dev.set(lat, lon)
+                    except Exception:
+                        pass
+                    self._walkStep.emit(lat, lon)
+                    self.hint.emit(f"Walking…  {i}/{total}   ({lat:.5f}, {lon:.5f})")
+                    if self._route_stop.wait(1.0):
+                        self._routeDone.emit("Route stopped.")
+                        return
+                if not repeat:
+                    self._routeDone.emit("Route complete.")
+                    return
+        finally:
+            self._playing = False
+
+    def _on_route_done(self, msg: str):
+        self._playing = False
+        self._following = False
+        self.hint.emit(msg)
+        if self._live_pos:
+            self._anchor = self._live_pos
+
+    def load_route(self, pts):
+        self.clear_route()
+        self.points = [tuple(p) for p in pts]
+        n = len(self.points)
+        for i in (1, n):                 # mark only start/end (GPX can be dense)
+            la, lo = self.points[i - 1]
+            self._wp_ovs.append(self.map.add_marker(
+                la, lo, make_waypoint(i), anchor="center", z=8))
+        self._redraw_path(self.points)
+        self.map.set_view(self.points[0][0], self.points[0][1], 14)
+
+    def import_gpx(self) -> bool:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import GPX track", "", "GPX track (*.gpx);;All files (*)")
+        if not path:
+            return False
+        try:
+            pts = route.parse_gpx(path)
+        except Exception as e:
+            self.hint.emit(f"Couldn’t read that GPX: {e}")
+            return False
+        self.load_route(pts)
+        self.hint.emit(f"Loaded {len(pts)} points from GPX. Press Start to walk it.")
+        return True
+
+    def export_gpx(self):
+        if len(self.points) < 2:
+            self.hint.emit("Drop at least two waypoints (or import a track) to export.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export route as GPX", "spoofr-route.gpx", "GPX track (*.gpx)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(route.build_gpx(self.points, "Spoofr route"))
+            self.hint.emit(f"Exported {len(self.points)} points → {path}")
+        except Exception as e:
+            self.hint.emit(f"Export failed: {e}")
 
     # ---- search ---------------------------------------------------------
 

@@ -80,8 +80,8 @@ QFrame#MapFrame {{ background: {PANEL}; border: 1px solid {BORDER}; border-radiu
 
 /* ---- buttons ---- */
 QPushButton {{
-    border: none; border-radius: 10px; padding: 0 16px;
-    font-weight: 600; font-size: 13px; min-height: 34px;
+    border: none; border-radius: 10px; padding: 0 12px;
+    font-weight: 600; font-size: 13px;
 }}
 QPushButton[variant="primary"] {{ background: {BLUE}; color: #ffffff; }}
 QPushButton[variant="primary"]:hover {{ background: {BLUE_HI}; }}

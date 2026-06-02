@@ -68,6 +68,26 @@ def make_dot(color: str, size: int = 16, ring: bool = True) -> QPixmap:
     return pm
 
 
+def make_waypoint(n: int, color: str = theme.BLUE, size: int = 22) -> QPixmap:
+    """A small numbered route waypoint: filled circle, white ring + number."""
+    pm = QPixmap(int(size * _DPR), int(size * _DPR))
+    pm.setDevicePixelRatio(_DPR)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    c = QPointF(size / 2, size / 2)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor("#ffffff"))
+    p.drawEllipse(c, size * 0.48, size * 0.48)
+    p.setBrush(QColor(color))
+    p.drawEllipse(c, size * 0.40, size * 0.40)
+    p.setPen(QColor("#ffffff"))
+    f = p.font(); f.setPixelSize(int(size * 0.56)); f.setBold(True); p.setFont(f)
+    p.drawText(QRectF(0, 0, size, size), Qt.AlignmentFlag.AlignCenter, str(n))
+    p.end()
+    return pm
+
+
 class PulseMarker(QGraphicsObject):
     """The live 'You' marker: a steady white-ringed core with a ring that
     expands and fades on a loop. Constant on-screen size at any zoom."""

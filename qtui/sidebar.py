@@ -47,6 +47,11 @@ class Sidebar(QFrame):
     brightnessChanged = Signal(str)
     pulseToggled = Signal(bool)
     jitterToggled = Signal(bool)
+    snapToggled = Signal(bool)
+    loopToggled = Signal(bool)
+    bounceToggled = Signal(bool)
+    importGpx = Signal()
+    exportGpx = Signal()
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -80,7 +85,7 @@ class Sidebar(QFrame):
         nav.setContentsMargins(14, 6, 14, 6); nav.setSpacing(2)
         self._nav = {}
         self._stack = QStackedWidget()
-        for key, lbl in (("places", "Places"), ("settings", "Settings"), ("about", "About")):
+        for key, lbl in (("places", "Places"), ("route", "Route"), ("settings", "Settings"), ("about", "About")):
             b = _navbtn(lbl)
             b.clicked.connect(lambda _=False, k=key: self._show(k))
             nav.addWidget(b)
@@ -92,6 +97,7 @@ class Sidebar(QFrame):
 
         self._sections = {
             "places": self._build_places(),
+            "route": self._build_route(),
             "settings": self._build_settings(),
             "about": self._build_about(),
         }
@@ -200,6 +206,38 @@ class Sidebar(QFrame):
         self.settings["recent"] = recent[:10]
         store.save(self.settings)
         self.refresh_places()
+
+    def _build_route(self):
+        area, lay = self._scroll()
+        lay.addWidget(_label("Route", 15, weight=700))
+        lay.addWidget(_label("In Route mode, click the map to drop waypoints, then press Start. "
+                             "Set the pace with the presets.", 12, theme.MUTED))
+        lay.addSpacing(4)
+        lay.addWidget(self._switch_row("Snap route to roads",
+                                       self.settings.get("snap_roads", False), self._on_snap))
+        lay.addWidget(_label("Follows real streets between waypoints, using the preset’s profile "
+                             "(walk/cycle/drive).", 12, theme.MUTED))
+        lay.addSpacing(4)
+        lay.addWidget(self._switch_row("Loop the route", False,
+                                       lambda on: self.loopToggled.emit(bool(on))))
+        lay.addWidget(self._switch_row("Bounce (there and back)", False,
+                                       lambda on: self.bounceToggled.emit(bool(on))))
+        lay.addSpacing(8)
+        lay.addWidget(_label("GPX", mono=True, color=theme.MUTED))
+        imp = QPushButton("Import GPX…"); imp.setProperty("variant", "soft"); imp.setFixedHeight(34)
+        imp.setCursor(Qt.CursorShape.PointingHandCursor)
+        imp.clicked.connect(lambda: self.importGpx.emit())
+        exp = QPushButton("Export route…"); exp.setProperty("variant", "soft"); exp.setFixedHeight(34)
+        exp.setCursor(Qt.CursorShape.PointingHandCursor)
+        exp.clicked.connect(lambda: self.exportGpx.emit())
+        lay.addWidget(imp); lay.addWidget(exp)
+        lay.addWidget(_label("Import a recorded track to replay it; export the waypoints you’ve dropped.",
+                             12, theme.MUTED))
+        return area
+
+    def _on_snap(self, on):
+        self.settings["snap_roads"] = bool(on); store.save(self.settings)
+        self.snapToggled.emit(bool(on))
 
     def _build_settings(self):
         area, lay = self._scroll()

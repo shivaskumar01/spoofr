@@ -1,0 +1,88 @@
+"""The control strip under the header: the Teleport/Route mode toggle and, in
+Route mode, the playback controls (pace presets, speed, loop/bounce, start/stop/
+clear). Drives the MapPanel.
+"""
+
+from __future__ import annotations
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
+    QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, QWidget,
+)
+
+from . import theme
+from .widgets import Segmented
+
+PRESETS = {"Walk": (1.4, "walking"), "Run": (3.3, "walking"),
+           "Cycle": (6.0, "cycling"), "Drive": (13.5, "driving")}
+
+
+def _btn(text, variant, w=None, h=32):
+    b = QPushButton(text)
+    b.setProperty("variant", variant)
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    b.setFixedHeight(h)
+    if w:
+        b.setFixedWidth(w)
+    return b
+
+
+class ControlBar(QFrame):
+    def __init__(self, panel, parent=None):
+        super().__init__(parent)
+        self.panel = panel
+        self.setObjectName("Ctl")
+        self.setStyleSheet(f"#Ctl {{ background: {theme.BG}; }}")
+        self.setFixedHeight(52)
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(16, 9, 16, 9); h.setSpacing(10)
+
+        self.mode = Segmented(["Teleport", "Route"], height=32, font_pt=12)
+        self.mode.changed.connect(self._on_mode)
+        h.addWidget(self.mode)
+
+        self.route_ctl = QWidget()
+        rl = QHBoxLayout(self.route_ctl)
+        rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
+        self.preset = Segmented(["Walk", "Run", "Cycle", "Drive"], height=28, font_pt=11)
+        self.preset.changed.connect(self._on_preset)
+        rl.addWidget(self.preset)
+        self.speed = QSlider(Qt.Orientation.Horizontal)
+        self.speed.setRange(5, 350); self.speed.setValue(14); self.speed.setFixedWidth(94)
+        self.speed.setStyleSheet(
+            f"QSlider::groove:horizontal {{ height: 4px; background: {theme.ELEV}; border-radius: 2px; }}"
+            f"QSlider::sub-page:horizontal {{ background: {theme.BLUE}; border-radius: 2px; }}"
+            f"QSlider::handle:horizontal {{ background: {theme.BLUE}; width: 15px; height: 15px;"
+            f" margin: -6px 0; border-radius: 7px; }}"
+            f"QSlider::handle:horizontal:hover {{ background: {theme.BLUE_HI}; }}")
+        self.speed.valueChanged.connect(self._on_speed)
+        rl.addWidget(self.speed)
+        self.speed_lbl = QLabel("1.4 m/s")
+        self.speed_lbl.setFixedWidth(50); self.speed_lbl.setFont(theme.ui_font(12))
+        rl.addWidget(self.speed_lbl)
+        start = _btn("Start", "primary"); start.clicked.connect(panel.start_route); rl.addWidget(start)
+        stop = _btn("Stop", "soft"); stop.clicked.connect(panel.stop_route); rl.addWidget(stop)
+        clear = _btn("Clear", "soft"); clear.clicked.connect(panel.clear_route); rl.addWidget(clear)
+        h.addWidget(self.route_ctl)
+        h.addStretch(1)
+        self.route_ctl.hide()
+
+    def _on_mode(self, val: str):
+        self.panel.set_mode(val.lower())
+        self.route_ctl.setVisible(val == "Route")
+
+    def set_mode(self, val: str):
+        """External sync (e.g. after a GPX import switches to Route)."""
+        self.mode.set_value(val)
+        self._on_mode(val)
+
+    def _on_preset(self, name: str):
+        spd, prof = PRESETS.get(name, (1.4, "walking"))
+        self.panel.set_preset(prof)
+        self.speed.setValue(int(spd * 10))      # fires _on_speed
+
+    def _on_speed(self, v: int):
+        spd = v / 10.0
+        self.speed_lbl.setText(f"{spd:.1f} m/s")
+        self.panel.set_speed(spd)

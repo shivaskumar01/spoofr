@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from . import store, theme
 from .bridge import DeviceBridge
+from .controlbar import ControlBar
 from .mapview import MapPanel
 from .sidebar import Sidebar
 from .wizard import DevModeWizard
@@ -63,9 +64,10 @@ class MainWindow(QWidget):
         hair = QFrame(); hair.setObjectName("Hairline"); hair.setFixedHeight(1)
         root.addWidget(hair)
 
+        # body (built first so the control bar can drive the panel)
         body = QWidget()
         bl = QVBoxLayout(body)
-        bl.setContentsMargins(14, 8, 14, 6)
+        bl.setContentsMargins(14, 6, 14, 6)
         bl.setSpacing(0)
         self.panel = MapPanel(self.bridge)
         bl.addWidget(self.panel, 1)
@@ -74,6 +76,9 @@ class MainWindow(QWidget):
         self.hint.setFont(theme.ui_font(12))
         self.hint.setContentsMargins(8, 6, 8, 6)
         bl.addWidget(self.hint)
+
+        self.controlbar = ControlBar(self.panel)
+        root.addWidget(self.controlbar)
         root.addWidget(body, 1)
 
         # open over a familiar city until the phone connects
@@ -101,11 +106,17 @@ class MainWindow(QWidget):
         self.sidebar.brightnessChanged.connect(self.panel.set_brightness)
         self.sidebar.pulseToggled.connect(self.panel.set_pulsing)
         self.sidebar.jitterToggled.connect(self.panel.set_jitter)
+        self.sidebar.snapToggled.connect(self.panel.set_snap)
+        self.sidebar.loopToggled.connect(self.panel.set_loop)
+        self.sidebar.bounceToggled.connect(self.panel.set_bounce)
+        self.sidebar.importGpx.connect(self._import_gpx)
+        self.sidebar.exportGpx.connect(self.panel.export_gpx)
 
         # apply saved preferences
         self.panel.set_brightness(self.settings.get("brightness", "Normal"))
         self.panel.set_pulsing(self.settings.get("pulse", True))
         self.panel.set_jitter(self.settings.get("jitter", False))
+        self.panel.set_snap(self.settings.get("snap_roads", False))
 
     def _build_header(self) -> QWidget:
         bar = QFrame()
@@ -175,6 +186,11 @@ class MainWindow(QWidget):
             self.set_hint("Pick or set a location first, then save it.")
             return
         self.sidebar.save_place(loc[0], loc[1])
+
+    def _import_gpx(self):
+        self.sidebar.close_menu()
+        if self.panel.import_gpx():
+            self.controlbar.set_mode("Route")
 
     def keyPressEvent(self, e):
         if not e.isAutoRepeat():
