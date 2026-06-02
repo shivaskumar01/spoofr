@@ -77,7 +77,9 @@ class TileMap(QGraphicsView):
         self._scene = QGraphicsScene(self)
         self._scene.setBackgroundBrush(QColor(theme.MAP_BG))
         self.setScene(self._scene)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        # Smart updates: the animated live marker repaints only its own small
+        # rect each frame instead of the whole tile grid (the Tk pulse's sin).
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
         self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
         self.setRenderHints(QPainter.RenderHint.SmoothPixmapTransform | QPainter.RenderHint.Antialiasing)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -164,6 +166,15 @@ class TileMap(QGraphicsView):
         dpr = pixmap.devicePixelRatio() or 1.0
         w, h = pixmap.width() / dpr, pixmap.height() / dpr
         item.setOffset(-w / 2, -h if anchor == "s" else -h / 2)
+        self._scene.addItem(item)
+        ov = _PointOverlay(item, lat, lon)
+        self._points.append(ov)
+        item.setPos(self._scene_pt(lat, lon))
+        return ov
+
+    def add_item(self, item, lat: float, lon: float):
+        """Pin an already-configured QGraphicsItem (e.g. an animated marker with
+        ItemIgnoresTransformations) to a coordinate."""
         self._scene.addItem(item)
         ov = _PointOverlay(item, lat, lon)
         self._points.append(ov)

@@ -1,8 +1,9 @@
 """Spoofr — native PySide6 application shell.
 
-Phase 0/1: the window chrome, the GPU map, and the connection status surface.
-Teleport/route/places/QR land in later phases. The device core (core.py) is
-shared with the legacy Tk app unchanged.
+The window chrome (header, status pill, Connect/Restore, hint bar) wrapped around
+a MapPanel. Connect/Restore drive the device through a DeviceBridge on worker
+threads; teleport + search live in the MapPanel. Route/places/QR land in later
+phases. The device core (core.py) is shared with the legacy Tk app unchanged.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from .bridge import DeviceBridge
-from .tilemap import TileMap
+from .mapview import MapPanel
 from .wizard import DevModeWizard
 
 START_CITIES = [
@@ -37,40 +38,6 @@ def _btn(text: str, variant: str = "primary", width: int | None = None, height: 
     return b
 
 
-class MapCard(QFrame):
-    """The rounded map card: the GPU map plus controls that float over it."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("MapFrame")
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(3, 3, 3, 3)
-        self.map = TileMap(self)
-        lay.addWidget(self.map)
-
-        # floating zoom pill (bottom-right)
-        self.zoom_pill = QFrame(self)
-        self.zoom_pill.setObjectName("Pill")
-        zl = QVBoxLayout(self.zoom_pill)
-        zl.setContentsMargins(3, 3, 3, 3)
-        zl.setSpacing(2)
-        zin = _btn("＋", "icon", width=42, height=40)
-        zout = _btn("－", "icon", width=42, height=40)
-        for b in (zin, zout):
-            f = b.font(); f.setPointSize(18); f.setBold(True); b.setFont(f)
-        sep = QFrame(); sep.setObjectName("Hairline"); sep.setFixedHeight(1)
-        zl.addWidget(zin); zl.addWidget(sep); zl.addWidget(zout)
-        zin.clicked.connect(lambda: self.map.zoom_at(1.0))
-        zout.clicked.connect(lambda: self.map.zoom_at(-1.0))
-        self.zoom_pill.raise_()
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        p = self.zoom_pill
-        p.adjustSize()
-        p.move(self.width() - p.width() - 16, self.height() - p.height() - 16)
-
-
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -78,6 +45,10 @@ class MainWindow(QWidget):
         self.setWindowTitle("Spoofr")
         self.resize(1060, 780)
         self.setMinimumSize(860, 600)
+        self._wizard = None
+
+        # device bridge: blocking core.* calls run off the GUI thread
+        self.bridge = DeviceBridge()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -91,8 +62,8 @@ class MainWindow(QWidget):
         bl = QVBoxLayout(body)
         bl.setContentsMargins(14, 8, 14, 6)
         bl.setSpacing(0)
-        self.card = MapCard()
-        bl.addWidget(self.card, 1)
+        self.panel = MapPanel(self.bridge)
+        bl.addWidget(self.panel, 1)
         self.hint = QLabel("Click Connect to drive your iPhone from this Mac.")
         self.hint.setStyleSheet(f"color: {theme.MUTED};")
         self.hint.setFont(theme.ui_font(12))
@@ -102,19 +73,17 @@ class MainWindow(QWidget):
 
         # open over a familiar city until the phone connects
         lat, lon = random.choice(START_CITIES)
-        self.card.map.set_view(lat, lon, 11)
+        self.panel.map.set_view(lat, lon, 11)
 
-        # ---- device bridge: blocking core.* calls off the GUI thread ----
-        self.bridge = DeviceBridge()
+        # ---- wiring ----
         self.bridge.status.connect(self.set_status)
         self.bridge.hint.connect(self.set_hint)
         self.bridge.connected.connect(self._on_connected)
         self.bridge.failed.connect(self._on_failed)
         self.bridge.devModeRequired.connect(self._on_dev_mode_required)
-        self.bridge.restored.connect(self._on_restored)
+        self.panel.hint.connect(self.set_hint)
         self.connect_btn.clicked.connect(self._on_connect_clicked)
         self.restore_btn.clicked.connect(lambda: self.bridge.restore())
-        self._wizard = None
 
     def _build_header(self) -> QWidget:
         bar = QFrame()
@@ -181,10 +150,6 @@ class MainWindow(QWidget):
         self._wizard = DevModeWizard(self)
         self._wizard.accepted.connect(self._on_connect_clicked)   # dev mode on → reconnect
         self._wizard.show()
-
-    def _on_restored(self):
-        # Phase 2 clears the live/staged markers here.
-        pass
 
     def closeEvent(self, e):
         try:
