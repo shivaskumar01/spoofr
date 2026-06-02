@@ -157,6 +157,21 @@ def _tail(path: Path, lines: int = 6) -> str:
         return "(no output)"
 
 
+def _log(msg: str, exc: bool = False) -> None:
+    """Append a diagnostic line (and optional traceback) to ~/.spoofr/spoofr.log."""
+    try:
+        import datetime
+        import traceback
+        p = Path.home() / ".spoofr" / "spoofr.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a") as f:
+            f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')}  {msg}\n")
+            if exc:
+                f.write(traceback.format_exc())
+    except Exception:
+        pass
+
+
 def geocode(query: str) -> tuple[float, float]:
     """Look up an address or city → (lat, lon). Raises SpooferError if not found.
 
@@ -225,11 +240,42 @@ class Device:
     name: str
     ios: str
     _location: LocationSimulation
-    _stack: AsyncExitStack
+    _stack: AsyncExitStack         # owns the RSD tunnel (closed last)
+    _rsd: object                   # RSD connection, to rebuild the DVT/location session
+    _loc_stack: AsyncExitStack     # owns the current DVT + LocationSimulation (rebuildable)
 
     def set(self, lat: float, lon: float) -> None:
-        """Place the iPhone at (lat, lon)."""
-        _loop.run(self._location.set(lat, lon))
+        """Place the iPhone at (lat, lon).
+
+        The instruments (DVT) channel that backs LocationSimulation gets torn down
+        if it sits idle (e.g. between connecting and the first 'Set location'),
+        surfacing as 'channel is closed'. So on any failure we rebuild the DVT +
+        location channels on the existing tunnel and retry once.
+        """
+        try:
+            _loop.run(self._location.set(lat, lon))
+        except Exception as first:
+            _log(f"location set failed ({first!r}); reopening DVT/location channel", exc=True)
+            try:
+                _loop.run(self._reopen())
+                _loop.run(self._location.set(lat, lon))
+            except Exception as second:
+                _log(f"reopen+retry failed: {second!r}", exc=True)
+                raise
+
+    async def _reopen(self) -> None:
+        """Rebuild the DVT + LocationSimulation channels on the existing RSD tunnel."""
+        try:
+            await self._loc_stack.aclose()
+        except Exception:
+            pass
+        stack = AsyncExitStack()
+        dvt = DvtProvider(self._rsd)
+        await asyncio.wait_for(stack.enter_async_context(dvt), 20)
+        location = LocationSimulation(dvt)
+        await asyncio.wait_for(stack.enter_async_context(location), 20)
+        self._loc_stack = stack
+        self._location = location
 
     def clear(self) -> None:
         """Drop the spoof; iOS reacquires the real GPS fix in a few seconds."""
@@ -267,6 +313,10 @@ class Device:
         async def shutdown():
             try:
                 await self._location.clear()
+            except Exception:
+                pass
+            try:
+                await self._loc_stack.aclose()
             finally:
                 await self._stack.aclose()
         try:
@@ -374,21 +424,23 @@ async def _open(say: StatusFn) -> Device:
     rsd = await _wait_for_rsd(udid, say)
 
     say("Opening the location service…")
-    # One stack owns the whole session: tunnel closes last, location first.
-    stack = AsyncExitStack()
+    stack = AsyncExitStack()          # owns the RSD tunnel (closes last)
+    loc_stack = AsyncExitStack()      # owns DVT + location (rebuildable if the channel idles out)
     try:
         stack.push_async_callback(rsd.close)
         dvt = DvtProvider(rsd)
-        await _bounded(stack.enter_async_context(dvt), 20,
+        await _bounded(loc_stack.enter_async_context(dvt), 20,
                        "Timed out opening the developer-services session.")
         location = LocationSimulation(dvt)
-        await _bounded(stack.enter_async_context(location), 20,
+        await _bounded(loc_stack.enter_async_context(location), 20,
                        "Timed out opening the location service.")
     except Exception:
+        await loc_stack.aclose()
         await stack.aclose()
         raise
 
-    return Device(name=name, ios=ios, _location=location, _stack=stack)
+    return Device(name=name, ios=ios, _location=location, _stack=stack,
+                  _rsd=rsd, _loc_stack=loc_stack)
 
 
 async def _bounded(coro, seconds: float, message: str):
