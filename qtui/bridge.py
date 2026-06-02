@@ -31,6 +31,7 @@ class DeviceBridge(QObject):
     restored = Signal()
     # (lat, lon) just pushed to the phone, for the live marker
     located = Signal(float, float)
+    currentLocation = Signal(float, float)   # the Mac's location, found on connect
 
     def __init__(self):
         super().__init__()
@@ -100,6 +101,16 @@ class DeviceBridge(QObject):
             except Exception as e:
                 self.hint.emit(f"Restore failed: {e}")
         threading.Thread(target=work, daemon=True).start()
+
+    def locate(self):
+        """Find the Mac's current location (off-thread) and emit it."""
+        threading.Thread(target=self._locate_worker, daemon=True).start()
+
+    def _locate_worker(self):
+        from . import geo
+        loc = geo.current_location()
+        if loc:
+            self.currentLocation.emit(loc[0], loc[1])
 
     def is_connected(self) -> bool:
         return self.device is not None

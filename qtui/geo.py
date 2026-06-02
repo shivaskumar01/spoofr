@@ -57,3 +57,63 @@ def geocode(query: str) -> tuple[float, float]:
         if result.ok and result.latlng:
             return result.latlng[0], result.latlng[1]
     raise RuntimeError(f"Couldn’t find “{query}”. Try a more specific address or city.")
+
+
+def current_location(timeout: float = 2.0):
+    """Best available 'where am I' for this Mac (the phone is right next to it).
+
+    macOS CoreLocation first — precise (~Wi-Fi accuracy) if Location Services is
+    granted; otherwise IP geolocation (city-level). Returns (lat, lon) or None.
+    Blocking — call from a worker thread. iOS exposes no way to read the phone's
+    real GPS over the developer tunnel, so the Mac's location is the closest proxy.
+    """
+    return _mac_location(timeout) or _ip_location()
+
+
+def _ip_location():
+    import geocoder
+    try:
+        g = geocoder.ip("me")
+        if g.ok and g.latlng:
+            return float(g.latlng[0]), float(g.latlng[1])
+    except Exception:
+        pass
+    return None
+
+
+def _mac_location(timeout: float):
+    """macOS CoreLocation fix, or None if unavailable/denied/too slow.
+
+    Only used when Location Services is already granted (status 3/4) — otherwise
+    we bail instantly (a non-bundled process can't trigger the auth prompt, and
+    waiting for a fix that never comes would just stall the connect). When Spoofr
+    is a properly-entitled bundle this path gives a precise fix for free.
+    """
+    try:
+        import time as _t
+        from CoreLocation import CLLocationManager
+        from Foundation import NSDate, NSRunLoop
+    except Exception:
+        return None
+    try:
+        if not CLLocationManager.locationServicesEnabled():
+            return None
+        if CLLocationManager.authorizationStatus() not in (3, 4):   # always / when-in-use
+            return None
+        mgr = CLLocationManager.alloc().init()
+        mgr.startUpdatingLocation()
+        rl = NSRunLoop.currentRunLoop()        # this worker thread's run loop
+        deadline = _t.time() + timeout
+        while _t.time() < deadline:
+            loc = mgr.location()
+            if loc is not None:
+                c = loc.coordinate()
+                lat, lon = float(c.latitude), float(c.longitude)
+                mgr.stopUpdatingLocation()
+                if lat or lon:
+                    return lat, lon
+            rl.runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.15))
+        mgr.stopUpdatingLocation()
+    except Exception:
+        pass
+    return None

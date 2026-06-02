@@ -121,6 +121,7 @@ class MainWindow(QWidget):
         self.sidebar.importGpx.connect(self._import_gpx)
         self.sidebar.exportGpx.connect(self.panel.export_gpx)
         self.panel.requestTeleport.connect(lambda: self.controlbar.set_mode("Teleport"))
+        self.bridge.currentLocation.connect(self.panel.locate_me)
         self.controlbar.appModeChanged.connect(self._on_app_mode)
         self.portable.qrReady.connect(self._on_qr_ready)
         self.portable.statusUpdate.connect(self._on_portable_status)
@@ -190,7 +191,8 @@ class MainWindow(QWidget):
     def _on_connected(self, device):
         self.connect_btn.setEnabled(True)
         self.panel.show_walk_pad(True)
-        self.set_hint("Connected — drop a pin, search a place, or use the ◉ walk pad (bottom-left).")
+        self.bridge.locate()             # fly the map to the user's current location
+        self.set_hint("Connected — finding your location… drop a pin or search to move your iPhone.")
 
     # ---- places + walking ----------------------------------------------
 
