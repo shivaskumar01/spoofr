@@ -1,6 +1,6 @@
 """Map marker graphics, drawn natively with QPainter.
 
-- make_pin / make_dot return crisp @2x QPixmaps for the staged pin and waypoints.
+- make_pin / make_waypoint return crisp @2x QPixmaps for the staged pin + waypoints.
 - PulseMarker is a live QGraphicsObject whose ring expands/fades via a
   QPropertyAnimation — a genuinely smooth 60fps pulse, not a frame cycle.
 """
@@ -47,23 +47,6 @@ def make_pin(color: str, w: int = 38, h: int = 50) -> QPixmap:
     p.drawPath(path)
     p.setBrush(QColor("#ffffff"))
     p.drawEllipse(QPointF(cx, head), r * 0.40, r * 0.40)
-    p.end()
-    return pm
-
-
-def make_dot(color: str, size: int = 16, ring: bool = True) -> QPixmap:
-    pm = QPixmap(int(size * _DPR), int(size * _DPR))
-    pm.setDevicePixelRatio(_DPR)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    c = QPointF(size / 2, size / 2)
-    p.setPen(Qt.PenStyle.NoPen)
-    if ring:
-        p.setBrush(QColor("#ffffff"))
-        p.drawEllipse(c, size * 0.46, size * 0.46)
-    p.setBrush(QColor(color))
-    p.drawEllipse(c, size * 0.34, size * 0.34)
     p.end()
     return pm
 

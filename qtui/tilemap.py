@@ -202,9 +202,6 @@ class TileMap(QGraphicsView):
         ov.lat, ov.lon = lat, lon
         ov.item.setPos(self._scene_pt(lat, lon))
 
-    def set_marker_pixmap(self, ov: _PointOverlay, pixmap: QPixmap):
-        ov.item.setPixmap(pixmap)
-
     def remove_overlay(self, ov):
         try:
             self._scene.removeItem(ov.item)

@@ -72,6 +72,7 @@ class _SuggestRow(QFrame):
 class MapPanel(QFrame):
     hint = Signal(str)
     committed = Signal(float, float)     # a teleport set landed (-> recents)
+    requestTeleport = Signal()           # search/place in route mode -> switch to teleport
     # worker-thread results, marshalled back to the GUI thread
     _suggestReady = Signal(str, object)
     _geocodeReady = Signal(float, float)
@@ -226,7 +227,11 @@ class MapPanel(QFrame):
     def _on_click(self, lat: float, lon: float):
         if self.mode == "route":
             self._add_waypoint(lat, lon)
-            return
+        else:
+            self._stage(lat, lon)
+
+    def _stage(self, lat: float, lon: float):
+        """Drop/move the staged teleport pin (a candidate, not yet sent)."""
         self.pending = (lat, lon)
         if self._pin_ov is None:
             self._pin_ov = self.map.add_marker(lat, lon, self._pin, anchor="s")
@@ -272,8 +277,10 @@ class MapPanel(QFrame):
         self.readout.hide()
 
     def goto(self, lat: float, lon: float, zoom: float = 15):
+        if self.mode == "route":
+            self.requestTeleport.emit()   # search/place implies teleport, not a waypoint
         self.map.set_view(lat, lon, zoom)
-        self._on_click(lat, lon)        # stage it too, so one tap sets it
+        self._stage(lat, lon)             # stage it too, so one tap sets it
 
     # ---- walk pad (joystick) + arrow keys -------------------------------
 

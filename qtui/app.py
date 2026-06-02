@@ -120,6 +120,7 @@ class MainWindow(QWidget):
         self.sidebar.bounceToggled.connect(self.panel.set_bounce)
         self.sidebar.importGpx.connect(self._import_gpx)
         self.sidebar.exportGpx.connect(self.panel.export_gpx)
+        self.panel.requestTeleport.connect(lambda: self.controlbar.set_mode("Teleport"))
         self.controlbar.appModeChanged.connect(self._on_app_mode)
         self.portable.qrReady.connect(self._on_qr_ready)
         self.portable.statusUpdate.connect(self._on_portable_status)

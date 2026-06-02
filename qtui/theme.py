@@ -33,11 +33,6 @@ MAP_BG   = "#0b0f19"   # tile placeholder / canvas behind the map
 GREY, GREEN, AMBER, RED = "#6b7687", "#2bd07a", "#f4b740", "#ff5c5c"
 
 
-def _rgba(hex_color: str, a: float) -> str:
-    c = QColor(hex_color)
-    return f"rgba({c.red()},{c.green()},{c.blue()},{a:.3f})"
-
-
 def ui_font(size: int = 13, weight: int = 400) -> QFont:
     """The system UI font (SF Pro on macOS), at a given point size.
 
