@@ -283,12 +283,13 @@ class MapPanel(QFrame):
         self._stage(lat, lon)             # stage it too, so one tap sets it
 
     def locate_me(self, lat: float, lon: float):
-        """Fly to the user's approximate area (IP-level) and show the 'You' marker —
-        informational only (no spoof, no jitter anchor). Zoom 13 matches the
-        accuracy; the user clicks their exact spot to refine."""
-        self.map.set_view(lat, lon, 13)
+        """Fly to the user's current location and show the 'You' marker —
+        informational only (no spoof, no jitter anchor). Street zoom: the packaged
+        app gets an exact CoreLocation fix; a plain dev run gets IP (city) — either
+        way the user clicks/searches to set the iPhone."""
+        self.map.set_view(lat, lon, 15)
         self._set_live(lat, lon)
-        self.hint.emit("Centered on your area — click your exact spot or search, then “Set location here”.")
+        self.hint.emit("Centered on your location — click anywhere or search, then “Set location here”.")
 
     # ---- walk pad (joystick) + arrow keys -------------------------------
 

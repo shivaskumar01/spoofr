@@ -59,18 +59,55 @@ def geocode(query: str) -> tuple[float, float]:
     raise RuntimeError(f"Couldn’t find “{query}”. Try a more specific address or city.")
 
 
-def current_location():
-    """Approximate location of this Mac from its public IP — zero setup, no
-    permissions, works for any user the instant they open the app.
+def current_location(timeout: float = 8.0):
+    """Where is this Mac (the phone is right next to it)?
 
-    A Mac has no GPS, and precise Wi-Fi positioning is gated behind the Location
-    Services permission, so IP geolocation is the clean no-prompt option. ip-api.com
-    is the primary source (notably more accurate than ipinfo for most consumer ISPs);
-    ipinfo.io is the fallback. City/region-level — the user clicks their exact spot
-    to refine. (iOS exposes no way to read the phone's real GPS over the dev tunnel.)
+    Precise via macOS CoreLocation when Spoofr runs as the signed .app bundle — one
+    native 'Allow' prompt, then ~Wi-Fi accuracy. In a plain `python -m qtui` run,
+    CoreLocation is silently denied by macOS, so that path is skipped instantly and
+    IP geolocation (ip-api → ipinfo, city-level) carries it with zero setup. iOS
+    exposes no way to read the phone's own GPS over the dev tunnel.
 
     Returns (lat, lon) or None. Blocking — call from a worker thread.
     """
+    return _mac_location(timeout) or _ip_location()
+
+
+def _mac_location(timeout: float):
+    """Precise CoreLocation fix — only attempted in the bundle (where it can work)."""
+    import sys
+    if not getattr(sys, "frozen", False):   # script run: macOS denies it → don't stall
+        return None
+    try:
+        import time as _t
+        from CoreLocation import CLLocationManager
+        from Foundation import NSDate, NSRunLoop
+    except Exception:
+        return None
+    try:
+        if not CLLocationManager.locationServicesEnabled():
+            return None
+        if CLLocationManager.authorizationStatus() == 2:    # the user chose Deny
+            return None
+        mgr = CLLocationManager.alloc().init()
+        mgr.requestWhenInUseAuthorization()                 # shows the prompt once
+        mgr.startUpdatingLocation()
+        rl = NSRunLoop.currentRunLoop()
+        deadline = _t.time() + timeout
+        while _t.time() < deadline:
+            loc = mgr.location()
+            if loc is not None:
+                c = loc.coordinate()
+                mgr.stopUpdatingLocation()
+                return float(c.latitude), float(c.longitude)
+            rl.runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.1))
+        mgr.stopUpdatingLocation()
+    except Exception:
+        pass
+    return None
+
+
+def _ip_location():
     import requests
     headers = {"User-Agent": "Spoofr/1.0 (macOS location utility)"}
     for url, pick in (
