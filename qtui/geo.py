@@ -59,67 +59,31 @@ def geocode(query: str) -> tuple[float, float]:
     raise RuntimeError(f"Couldn’t find “{query}”. Try a more specific address or city.")
 
 
-def current_location(timeout: float = 8.0):
-    """Best available 'where is this Mac' (the phone is right next to it).
+def current_location():
+    """Approximate location of this Mac from its public IP — zero setup, no
+    permissions, works for any user the instant they open the app.
 
-    CoreLocationCLI first — precise Wi-Fi positioning, if it's installed and the
-    user granted Location Services (`brew install corelocationcli`). Otherwise IP
-    geolocation (ip-api, then ipinfo) — region-level, but far better than ipinfo
-    alone for many ISPs. Returns (lat, lon) or None. Blocking — worker thread only.
+    A Mac has no GPS, and precise Wi-Fi positioning is gated behind the Location
+    Services permission, so IP geolocation is the clean no-prompt option. ip-api.com
+    is the primary source (notably more accurate than ipinfo for most consumer ISPs);
+    ipinfo.io is the fallback. City/region-level — the user clicks their exact spot
+    to refine. (iOS exposes no way to read the phone's real GPS over the dev tunnel.)
 
-    iOS exposes no way to read the phone's real GPS over the developer tunnel, so
-    the Mac's own location is the closest available proxy.
+    Returns (lat, lon) or None. Blocking — call from a worker thread.
     """
-    return _corelocationcli(timeout) or _ip_location()
-
-
-def _corelocationcli(timeout: float):
-    """Precise fix via the CoreLocationCLI helper, if installed + permitted."""
-    import os
-    import shutil
-    import subprocess
-    exe = shutil.which("CoreLocationCLI")
-    if not exe:                          # GUI-launched apps often lack /opt/homebrew/bin on PATH
-        for cand in ("/opt/homebrew/bin/CoreLocationCLI", "/usr/local/bin/CoreLocationCLI"):
-            if os.path.exists(cand):
-                exe = cand
-                break
-    if not exe:
-        return None
-    try:
-        out = subprocess.run([exe, "--format", "%latitude %longitude"],
-                             capture_output=True, text=True, timeout=timeout)
-        nums = []
-        for tok in out.stdout.replace(",", " ").split():
-            try:
-                nums.append(float(tok))
-            except ValueError:
-                pass
-        # must look like a real coordinate (guards against error text / partial output)
-        if len(nums) >= 2 and -90 <= nums[0] <= 90 and -180 <= nums[1] <= 180 \
-                and (nums[0] or nums[1]):
-            return nums[0], nums[1]
-    except Exception:
-        pass
-    return None
-
-
-def _ip_location():
-    """IP geolocation. ip-api.com first (more accurate for many consumer ISPs
-    than ipinfo), ipinfo.io as a fallback. Region-level at best."""
     import requests
     headers = {"User-Agent": "Spoofr/1.0 (macOS location utility)"}
-    try:
-        d = requests.get("http://ip-api.com/json", timeout=4, headers=headers).json()
-        if d.get("status") == "success" and d.get("lat") is not None:
-            return float(d["lat"]), float(d["lon"])
-    except Exception:
-        pass
-    try:
-        d = requests.get("https://ipinfo.io/json", timeout=4, headers=headers).json()
-        if d.get("loc"):
-            lat, lon = d["loc"].split(",")
-            return float(lat), float(lon)
-    except Exception:
-        pass
+    for url, pick in (
+        ("http://ip-api.com/json",
+         lambda d: (d["lat"], d["lon"]) if d.get("status") == "success" else None),
+        ("https://ipinfo.io/json",
+         lambda d: tuple(d["loc"].split(",")) if d.get("loc") else None),
+    ):
+        try:
+            d = requests.get(url, timeout=4, headers=headers).json()
+            xy = pick(d)
+            if xy and xy[0] is not None:
+                return float(xy[0]), float(xy[1])
+        except Exception:
+            continue
     return None
