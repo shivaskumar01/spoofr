@@ -5,7 +5,7 @@ clear). Drives the MapPanel.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QPushButton, QSlider, QWidget,
 )
@@ -28,6 +28,8 @@ def _btn(text, variant, w=None, h=32):
 
 
 class ControlBar(QFrame):
+    appModeChanged = Signal(str)        # "mac" | "iphone"
+
     def __init__(self, panel, parent=None):
         super().__init__(parent)
         self.panel = panel
@@ -37,6 +39,10 @@ class ControlBar(QFrame):
 
         h = QHBoxLayout(self)
         h.setContentsMargins(16, 9, 16, 9); h.setSpacing(10)
+
+        self.app_mode = Segmented(["This Mac", "iPhone"], height=32, font_pt=12)
+        self.app_mode.changed.connect(self._on_app_mode)
+        h.addWidget(self.app_mode)
 
         self.mode = Segmented(["Teleport", "Route"], height=32, font_pt=12)
         self.mode.changed.connect(self._on_mode)
@@ -67,6 +73,15 @@ class ControlBar(QFrame):
         h.addWidget(self.route_ctl)
         h.addStretch(1)
         self.route_ctl.hide()
+
+    def _on_app_mode(self, val: str):
+        iphone = (val == "iPhone")
+        self.mode.setVisible(not iphone)
+        if iphone:
+            self.route_ctl.hide()
+        else:
+            self.route_ctl.setVisible(self.mode.value() == "Route")
+        self.appModeChanged.emit("iphone" if iphone else "mac")
 
     def _on_mode(self, val: str):
         self.panel.set_mode(val.lower())

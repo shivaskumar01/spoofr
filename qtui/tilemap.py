@@ -22,7 +22,7 @@ import math
 from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QUrl, QStandardPaths
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtNetwork import (
     QNetworkAccessManager, QNetworkDiskCache, QNetworkRequest, QNetworkReply,
 )
@@ -397,3 +397,7 @@ class TileMap(QGraphicsView):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._apply_view()
+        # round the corners so the map sits inside the card's rounded frame
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, self.width(), self.height(), 11, 11)
+        self.setMask(QRegion(path.toFillPolygon().toPolygon()))

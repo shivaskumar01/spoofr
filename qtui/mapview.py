@@ -287,14 +287,14 @@ class MapPanel(QFrame):
                 ("↙", (-1, -1)), ("↓", (-1, 0)), ("↘", (-1, 1))]
         for i, (glyph, vec) in enumerate(dirs):
             stop = vec == (0, 0)
-            b = QPushButton(glyph); b.setFixedSize(34, 34)
+            b = QPushButton(glyph); b.setFixedSize(36, 36)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            f = b.font(); f.setPointSize(15); b.setFont(f)
+            f = b.font(); f.setPointSize(17); f.setBold(True); b.setFont(f)
             b.setStyleSheet(
                 f"QPushButton {{ border: none; border-radius: 8px;"
-                f" background: {'transparent' if stop else theme.ELEV};"
-                f" color: {theme.MUTED if stop else theme.TEXT}; }}"
-                f"QPushButton:hover {{ background: {theme.GHOST_HI}; }}")
+                f" background: {'transparent' if stop else theme.ELEV_HI};"
+                f" color: {theme.MUTED if stop else theme.LIVE_HI}; }}"
+                f"QPushButton:hover {{ background: {theme.BLUE}; color: #ffffff; }}")
             grid.addWidget(b, i // 3, i % 3)
             if stop:
                 b.clicked.connect(self._walk_release)

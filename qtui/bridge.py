@@ -104,6 +104,13 @@ class DeviceBridge(QObject):
     def is_connected(self) -> bool:
         return self.device is not None
 
+    def drop_device(self):
+        """Release the device session (hand off to the phone) but leave the
+        Wi-Fi tunnel up, so iPhone mode can reuse it."""
+        dev, self.device = self.device, None
+        if dev:
+            threading.Thread(target=dev.close, daemon=True).start()
+
     def close(self):
         """Tear the session + tunnel down. Call on app exit."""
         dev, self.device = self.device, None

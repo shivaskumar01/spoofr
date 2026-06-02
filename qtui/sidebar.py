@@ -52,6 +52,7 @@ class Sidebar(QFrame):
     bounceToggled = Signal(bool)
     importGpx = Signal()
     exportGpx = Signal()
+    placesChanged = Signal()
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -178,6 +179,7 @@ class Sidebar(QFrame):
             self._recent_box.addWidget(self._place_row(
                 f"{p['lat']:.4f}, {p['lon']:.4f}", p["lat"], p["lon"],
                 on_save=lambda la=p["lat"], lo=p["lon"]: self._save_named(la, lo)))
+        self.placesChanged.emit()
 
     def _delete_saved(self, idx: int):
         saved = self.settings.get("saved", [])
