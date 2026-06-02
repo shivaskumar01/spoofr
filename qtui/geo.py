@@ -59,61 +59,67 @@ def geocode(query: str) -> tuple[float, float]:
     raise RuntimeError(f"Couldn’t find “{query}”. Try a more specific address or city.")
 
 
-def current_location(timeout: float = 2.0):
-    """Best available 'where am I' for this Mac (the phone is right next to it).
+def current_location(timeout: float = 8.0):
+    """Best available 'where is this Mac' (the phone is right next to it).
 
-    macOS CoreLocation first — precise (~Wi-Fi accuracy) if Location Services is
-    granted; otherwise IP geolocation (city-level). Returns (lat, lon) or None.
-    Blocking — call from a worker thread. iOS exposes no way to read the phone's
-    real GPS over the developer tunnel, so the Mac's location is the closest proxy.
+    CoreLocationCLI first — precise Wi-Fi positioning, if it's installed and the
+    user granted Location Services (`brew install corelocationcli`). Otherwise IP
+    geolocation (ip-api, then ipinfo) — region-level, but far better than ipinfo
+    alone for many ISPs. Returns (lat, lon) or None. Blocking — worker thread only.
+
+    iOS exposes no way to read the phone's real GPS over the developer tunnel, so
+    the Mac's own location is the closest available proxy.
     """
-    return _mac_location(timeout) or _ip_location()
+    return _corelocationcli(timeout) or _ip_location()
 
 
-def _ip_location():
-    import geocoder
+def _corelocationcli(timeout: float):
+    """Precise fix via the CoreLocationCLI helper, if installed + permitted."""
+    import os
+    import shutil
+    import subprocess
+    exe = shutil.which("CoreLocationCLI")
+    if not exe:                          # GUI-launched apps often lack /opt/homebrew/bin on PATH
+        for cand in ("/opt/homebrew/bin/CoreLocationCLI", "/usr/local/bin/CoreLocationCLI"):
+            if os.path.exists(cand):
+                exe = cand
+                break
+    if not exe:
+        return None
     try:
-        g = geocoder.ip("me")
-        if g.ok and g.latlng:
-            return float(g.latlng[0]), float(g.latlng[1])
+        out = subprocess.run([exe, "--format", "%latitude %longitude"],
+                             capture_output=True, text=True, timeout=timeout)
+        nums = []
+        for tok in out.stdout.replace(",", " ").split():
+            try:
+                nums.append(float(tok))
+            except ValueError:
+                pass
+        # must look like a real coordinate (guards against error text / partial output)
+        if len(nums) >= 2 and -90 <= nums[0] <= 90 and -180 <= nums[1] <= 180 \
+                and (nums[0] or nums[1]):
+            return nums[0], nums[1]
     except Exception:
         pass
     return None
 
 
-def _mac_location(timeout: float):
-    """macOS CoreLocation fix, or None if unavailable/denied/too slow.
-
-    Only used when Location Services is already granted (status 3/4) — otherwise
-    we bail instantly (a non-bundled process can't trigger the auth prompt, and
-    waiting for a fix that never comes would just stall the connect). When Spoofr
-    is a properly-entitled bundle this path gives a precise fix for free.
-    """
+def _ip_location():
+    """IP geolocation. ip-api.com first (more accurate for many consumer ISPs
+    than ipinfo), ipinfo.io as a fallback. Region-level at best."""
+    import requests
+    headers = {"User-Agent": "Spoofr/1.0 (macOS location utility)"}
     try:
-        import time as _t
-        from CoreLocation import CLLocationManager
-        from Foundation import NSDate, NSRunLoop
+        d = requests.get("http://ip-api.com/json", timeout=4, headers=headers).json()
+        if d.get("status") == "success" and d.get("lat") is not None:
+            return float(d["lat"]), float(d["lon"])
     except Exception:
-        return None
+        pass
     try:
-        if not CLLocationManager.locationServicesEnabled():
-            return None
-        if CLLocationManager.authorizationStatus() not in (3, 4):   # always / when-in-use
-            return None
-        mgr = CLLocationManager.alloc().init()
-        mgr.startUpdatingLocation()
-        rl = NSRunLoop.currentRunLoop()        # this worker thread's run loop
-        deadline = _t.time() + timeout
-        while _t.time() < deadline:
-            loc = mgr.location()
-            if loc is not None:
-                c = loc.coordinate()
-                lat, lon = float(c.latitude), float(c.longitude)
-                mgr.stopUpdatingLocation()
-                if lat or lon:
-                    return lat, lon
-            rl.runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(0.15))
-        mgr.stopUpdatingLocation()
+        d = requests.get("https://ipinfo.io/json", timeout=4, headers=headers).json()
+        if d.get("loc"):
+            lat, lon = d["loc"].split(",")
+            return float(lat), float(lon)
     except Exception:
         pass
     return None
