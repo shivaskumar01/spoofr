@@ -13,14 +13,18 @@ import sys
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QMessageBox, QPushButton,
+    QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
     QVBoxLayout, QWidget,
 )
 
-from . import theme
+from . import store, theme
 from .bridge import DeviceBridge
 from .mapview import MapPanel
+from .sidebar import Sidebar
 from .wizard import DevModeWizard
+
+_ARROWS = {Qt.Key.Key_Up: "Up", Qt.Key.Key_Down: "Down",
+           Qt.Key.Key_Left: "Left", Qt.Key.Key_Right: "Right"}
 
 START_CITIES = [
     (47.6062, -122.3321), (37.7749, -122.4194), (40.7128, -74.0060),
@@ -49,6 +53,7 @@ class MainWindow(QWidget):
 
         # device bridge: blocking core.* calls run off the GUI thread
         self.bridge = DeviceBridge()
+        self.settings = store.load()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -75,6 +80,11 @@ class MainWindow(QWidget):
         lat, lon = random.choice(START_CITIES)
         self.panel.map.set_view(lat, lon, 11)
 
+        # slide-out side menu (overlay child of the window)
+        self.sidebar = Sidebar(self.settings, self)
+        self.sidebar.move(-self.sidebar.width(), 0)
+        self.sidebar.hide()
+
         # ---- wiring ----
         self.bridge.status.connect(self.set_status)
         self.bridge.hint.connect(self.set_hint)
@@ -82,8 +92,20 @@ class MainWindow(QWidget):
         self.bridge.failed.connect(self._on_failed)
         self.bridge.devModeRequired.connect(self._on_dev_mode_required)
         self.panel.hint.connect(self.set_hint)
+        self.panel.committed.connect(self.sidebar.add_recent)
         self.connect_btn.clicked.connect(self._on_connect_clicked)
         self.restore_btn.clicked.connect(lambda: self.bridge.restore())
+        self.menu_btn.clicked.connect(self.sidebar.toggle)
+        self.sidebar.usePlace.connect(self._use_place)
+        self.sidebar.saveCurrent.connect(self._save_current)
+        self.sidebar.brightnessChanged.connect(self.panel.set_brightness)
+        self.sidebar.pulseToggled.connect(self.panel.set_pulsing)
+        self.sidebar.jitterToggled.connect(self.panel.set_jitter)
+
+        # apply saved preferences
+        self.panel.set_brightness(self.settings.get("brightness", "Normal"))
+        self.panel.set_pulsing(self.settings.get("pulse", True))
+        self.panel.set_jitter(self.settings.get("jitter", False))
 
     def _build_header(self) -> QWidget:
         bar = QFrame()
@@ -93,9 +115,9 @@ class MainWindow(QWidget):
         h.setContentsMargins(14, 0, 20, 0)
         h.setSpacing(0)
 
-        menu = _btn("☰", "icon", width=40, height=36)
-        f = menu.font(); f.setPointSize(18); menu.setFont(f)
-        h.addWidget(menu)
+        self.menu_btn = _btn("☰", "icon", width=40, height=36)
+        f = self.menu_btn.font(); f.setPointSize(18); self.menu_btn.setFont(f)
+        h.addWidget(self.menu_btn)
         h.addSpacing(8)
 
         mark = QLabel("◉  Spoofr")
@@ -136,7 +158,45 @@ class MainWindow(QWidget):
 
     def _on_connected(self, device):
         self.connect_btn.setEnabled(True)
-        self.set_hint("Connected — drop a pin or search a place, then Set location here.")
+        self.panel.show_walk_pad(True)
+        self.set_hint("Connected — drop a pin, search a place, or use the ◉ walk pad (bottom-left).")
+
+    # ---- places + walking ----------------------------------------------
+
+    def _use_place(self, lat: float, lon: float):
+        self.sidebar.close_menu()
+        self.panel.goto(lat, lon)
+        if self.bridge.is_connected():
+            self.bridge.set_location(lat, lon)
+
+    def _save_current(self):
+        loc = self.panel.pending or self.panel._live_pos
+        if not loc:
+            self.set_hint("Pick or set a location first, then save it.")
+            return
+        self.sidebar.save_place(loc[0], loc[1])
+
+    def keyPressEvent(self, e):
+        if not e.isAutoRepeat():
+            k = _ARROWS.get(e.key())
+            if k and not isinstance(self.focusWidget(), QLineEdit):
+                self.panel.key_walk(k, True)
+                e.accept(); return
+        super().keyPressEvent(e)
+
+    def keyReleaseEvent(self, e):
+        if not e.isAutoRepeat():
+            k = _ARROWS.get(e.key())
+            if k:
+                self.panel.key_walk(k, False)
+                e.accept(); return
+        super().keyReleaseEvent(e)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "sidebar"):
+            self.sidebar.fit_height(self.height())
+            self.sidebar.move(0 if self.sidebar.is_open() else -self.sidebar.width(), 0)
 
     def _on_failed(self, msg: str):
         self.connect_btn.setEnabled(True)
@@ -152,6 +212,7 @@ class MainWindow(QWidget):
         self._wizard.show()
 
     def closeEvent(self, e):
+        self.panel._closing = True       # stop the jitter worker
         try:
             self.bridge.close()
         finally:

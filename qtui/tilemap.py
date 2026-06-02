@@ -108,6 +108,7 @@ class TileMap(QGraphicsView):
         self._paths: list[_PathOverlay] = []
         self._press_pos = None
         self._dragged = False
+        self._tint: QColor | None = None   # brightness overlay
 
     # ---- web-mercator projection (scene coords are tile*TILE at level self._z) ----
 
@@ -144,6 +145,22 @@ class TileMap(QGraphicsView):
     def set_center(self, lat: float, lon: float):
         self._clat, self._clon = lat, lon
         self._apply_view()
+
+    def pan_to(self, lat: float, lon: float):
+        """Lightweight recenter (no transform rebuild) — for follow-during-walk."""
+        self._clat, self._clon = lat, lon
+        self.centerOn(self._scene_pt(lat, lon))
+        self._layout_tiles()
+        self.viewChanged.emit()
+
+    def set_brightness(self, name: str):
+        self._tint = {"Dim": QColor(0, 0, 0, 54),
+                      "Bright": QColor(255, 255, 255, 18)}.get(name)
+        self.viewport().update()
+
+    def drawForeground(self, painter: QPainter, rect: QRectF):
+        if self._tint is not None:
+            painter.fillRect(rect, self._tint)
 
     def set_zoom(self, z: float, anchor=None):
         self._set_zoom(z, anchor)

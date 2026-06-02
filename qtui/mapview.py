@@ -7,16 +7,31 @@ teleport + search interaction. Talks to the device only through the DeviceBridge
 
 from __future__ import annotations
 
+import math
+import random
 import threading
+import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout,
+    QWidget,
 )
 
 from . import geo, theme
 from .markers import PulseMarker, make_pin
 from .tilemap import TileMap
+
+_M_PER_DEG = 111_320.0
+
+
+def _jitter(lat: float, lon: float, radius_m: float = 4.0) -> tuple[float, float]:
+    """Nudge a point by a random offset within `radius_m` metres."""
+    r = radius_m * math.sqrt(random.random())
+    th = random.uniform(0.0, 2.0 * math.pi)
+    dlat = (r * math.cos(th)) / _M_PER_DEG
+    dlon = (r * math.sin(th)) / (_M_PER_DEG * max(0.15, math.cos(math.radians(lat))))
+    return lat + dlat, lon + dlon
 
 
 def _icon_btn(text: str, w: int, h: int, pt: int = 18) -> QPushButton:
@@ -56,10 +71,13 @@ class _SuggestRow(QFrame):
 
 class MapPanel(QFrame):
     hint = Signal(str)
+    committed = Signal(float, float)     # a teleport set landed (-> recents)
     # worker-thread results, marshalled back to the GUI thread
     _suggestReady = Signal(str, object)
     _geocodeReady = Signal(float, float)
     _geocodeFailed = Signal(str)
+    _walkStep = Signal(float, float)
+    _jitterStep = Signal(float, float)
 
     def __init__(self, bridge, parent=None):
         super().__init__(parent)
@@ -76,10 +94,26 @@ class MapPanel(QFrame):
         self._pin_ov = None             # staged red pin overlay
         self._live = None               # PulseMarker
         self._live_ov = None
+        self._live_pos = None           # where the You dot is now
+        self._anchor = None             # idle point the jitter wobbles around
         self._suggest_items: list[dict] = []
 
+        # walking / jitter state
+        self.walk_speed = 1.4           # m/s (Phase 3b's route slider feeds this)
+        self._walk_vec = (0.0, 0.0)     # (north, east) unit vector
+        self._walk_pos = None
+        self._walking = False
+        self._following = False
+        self._keys_down: set[str] = set()
+        self._jitter_on = False
+        self._jitter_m = 4.0
+        self._pulse = True
+        self._closing = False
+
         self._build_floating()
+        self._build_walk_pad()
         self._wire()
+        threading.Thread(target=self._jitter_worker, daemon=True).start()
 
     # ---- floating chrome ------------------------------------------------
 
@@ -150,6 +184,8 @@ class MapPanel(QFrame):
         self._suggestReady.connect(self._show_suggestions)
         self._geocodeReady.connect(lambda la, lo: self.goto(la, lo))
         self._geocodeFailed.connect(lambda m: self.hint.emit(m))
+        self._walkStep.connect(self._on_walk_step)
+        self._jitterStep.connect(self._on_jitter_step)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -166,6 +202,8 @@ class MapPanel(QFrame):
         self.set_btn.move((W - self.set_btn.width()) // 2, H - self.set_btn.height() - 18)
         self.readout.adjustSize()
         self.readout.move(16, 14)
+        if getattr(self, "walk_pad", None) and self.walk_pad.isVisible():
+            self._position_walk_pad()
 
     # ---- teleport: stage a pin, then commit -----------------------------
 
@@ -182,25 +220,34 @@ class MapPanel(QFrame):
         if self.pending:
             self.bridge.set_location(*self.pending)
 
-    def _on_located(self, lat: float, lon: float):
-        # the set landed: show the live 'You' marker, drop the staged pin
+    def _set_live(self, lat: float, lon: float):
+        """Show/move the live 'You' marker + readout (teleport set or walk step)."""
+        self._live_pos = (lat, lon)
         if self._live is None:
             self._live = PulseMarker()
+            self._live.set_pulsing(self._pulse)
             self._live_ov = self.map.add_item(self._live, lat, lon)
         else:
             self.map.move_marker(self._live_ov, lat, lon)
         self.readout.setText(f"◉  {lat:.5f},  {lon:.5f}")
         self.readout.adjustSize(); self.readout.show(); self.readout.raise_()
+
+    def _on_located(self, lat: float, lon: float):
+        # a teleport set landed: live marker, drop the staged pin, log a recent
+        self._set_live(lat, lon)
+        self._anchor = (lat, lon)
         if self._pin_ov is not None:
             self.map.remove_overlay(self._pin_ov); self._pin_ov = None
         self.pending = None
         self.set_btn.hide()
+        self.committed.emit(lat, lon)
 
     def clear_markers(self):
         for ov in (self._pin_ov, self._live_ov):
             if ov is not None:
                 self.map.remove_overlay(ov)
         self._pin_ov = self._live_ov = self._live = None
+        self._live_pos = self._anchor = None
         self.pending = None
         self.set_btn.hide()
         self.readout.hide()
@@ -208,6 +255,139 @@ class MapPanel(QFrame):
     def goto(self, lat: float, lon: float, zoom: float = 15):
         self.map.set_view(lat, lon, zoom)
         self._on_click(lat, lon)        # stage it too, so one tap sets it
+
+    # ---- walk pad (joystick) + arrow keys -------------------------------
+
+    def _build_walk_pad(self):
+        self.walk_pad = QFrame(self.map)
+        self.walk_pad.setObjectName("Pill")
+        grid = QGridLayout(self.walk_pad)
+        grid.setContentsMargins(8, 8, 8, 8); grid.setSpacing(3)
+        dirs = [("↖", (1, -1)), ("↑", (1, 0)), ("↗", (1, 1)),
+                ("←", (0, -1)), ("•", (0, 0)), ("→", (0, 1)),
+                ("↙", (-1, -1)), ("↓", (-1, 0)), ("↘", (-1, 1))]
+        for i, (glyph, vec) in enumerate(dirs):
+            stop = vec == (0, 0)
+            b = QPushButton(glyph); b.setFixedSize(34, 34)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            f = b.font(); f.setPointSize(15); b.setFont(f)
+            b.setStyleSheet(
+                f"QPushButton {{ border: none; border-radius: 8px;"
+                f" background: {'transparent' if stop else theme.ELEV};"
+                f" color: {theme.MUTED if stop else theme.TEXT}; }}"
+                f"QPushButton:hover {{ background: {theme.GHOST_HI}; }}")
+            grid.addWidget(b, i // 3, i % 3)
+            if stop:
+                b.clicked.connect(self._walk_release)
+            else:
+                b.pressed.connect(lambda v=vec: self._walk_press(v))
+                b.released.connect(self._walk_release)
+        self.walk_pad.hide()
+
+    def show_walk_pad(self, show: bool):
+        self.walk_pad.setVisible(show)
+        if show:
+            self._position_walk_pad(); self.walk_pad.raise_()
+        else:
+            self._walk_release()
+
+    def _position_walk_pad(self):
+        self.walk_pad.adjustSize()
+        self.walk_pad.move(16, self.map.height() - self.walk_pad.height() - 16)
+
+    def _walk_press(self, vec):
+        n, e = vec
+        mag = math.hypot(n, e) or 1.0
+        self._walk_vec = (n / mag, e / mag)
+        self._start_walk()
+
+    def _walk_release(self):
+        self._walk_vec = (0.0, 0.0)
+        self._walking = False
+        self._following = False
+
+    def _start_walk(self):
+        if self._walking:
+            return
+        if self.bridge.device is None:
+            self._walk_vec = (0.0, 0.0)
+            self.hint.emit("Connect to your iPhone first.")
+            return
+        self._walk_pos = self._live_pos or self.map.center()
+        self._walking = True
+        self._following = True
+        threading.Thread(target=self._walk_worker, daemon=True).start()
+
+    def _walk_worker(self):
+        dt = 0.18
+        while self._walking and self.bridge.device is not None:
+            vx, vy = self._walk_vec
+            if (vx or vy) and self._walk_pos:
+                lat, lon = self._walk_pos
+                dist = max(self.walk_speed, 0.3) * dt
+                lat += (vx * dist) / _M_PER_DEG
+                lon += (vy * dist) / (_M_PER_DEG * max(0.15, math.cos(math.radians(lat))))
+                self._walk_pos = (lat, lon)
+                try:
+                    self.bridge.device.set(lat, lon)
+                except Exception:
+                    pass
+                self._walkStep.emit(lat, lon)
+            time.sleep(dt)
+        if self._walk_pos:
+            self._anchor = self._walk_pos
+
+    def _on_walk_step(self, lat: float, lon: float):
+        self._set_live(lat, lon)
+        if self._following:
+            self.map.pan_to(lat, lon)
+
+    def key_walk(self, key: str, pressed: bool):
+        if pressed:
+            self._keys_down.add(key)
+        else:
+            self._keys_down.discard(key)
+        n = ("Up" in self._keys_down) - ("Down" in self._keys_down)
+        e = ("Right" in self._keys_down) - ("Left" in self._keys_down)
+        if not n and not e:
+            self._walk_release()
+        else:
+            mag = math.hypot(n, e)
+            self._walk_vec = (n / mag, e / mag)
+            self._start_walk()
+
+    # ---- jitter / pulse / brightness ------------------------------------
+
+    def _jitter_worker(self):
+        while not self._closing:
+            try:
+                if (self._jitter_on and self.bridge.device is not None
+                        and self._anchor and not self._walking):
+                    jlat, jlon = _jitter(self._anchor[0], self._anchor[1], self._jitter_m)
+                    try:
+                        self.bridge.device.set(jlat, jlon)
+                    except Exception:
+                        pass
+                    self._jitterStep.emit(jlat, jlon)
+            except Exception:
+                pass
+            time.sleep(1.5)
+
+    def _on_jitter_step(self, lat: float, lon: float):
+        # wobble only the dot; the readout stays on the anchor
+        if self._live_ov is not None:
+            self.map.move_marker(self._live_ov, lat, lon)
+
+    def set_pulsing(self, on: bool):
+        self._pulse = bool(on)
+        if self._live is not None:
+            self._live.set_pulsing(self._pulse)
+
+    def set_jitter(self, on: bool):
+        self._jitter_on = bool(on)
+
+    def set_brightness(self, name: str):
+        self.map.set_brightness(name)
 
     # ---- search ---------------------------------------------------------
 
