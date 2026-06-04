@@ -107,7 +107,7 @@ class MainWindow(QWidget):
         self.bridge.devModeRequired.connect(self._on_dev_mode_required)
         self.panel.hint.connect(self.set_hint)
         self.panel.committed.connect(self.sidebar.add_recent)
-        self.connect_btn.clicked.connect(self._on_connect_clicked)
+        self.connect_btn.clicked.connect(self._on_connect_btn)
         self.restore_btn.clicked.connect(self._on_restore)
         self.menu_btn.clicked.connect(self.sidebar.toggle)
         self.sidebar.usePlace.connect(self._use_place)
@@ -184,12 +184,37 @@ class MainWindow(QWidget):
 
     # ---- connect / restore ---------------------------------------------
 
-    def _on_connect_clicked(self):
-        self.connect_btn.setEnabled(False)
+    def _set_connect_state(self, state: str):
+        """state: 'connect' (blue) | 'connecting' (disabled) | 'disconnect' (red)."""
+        b = self.connect_btn
+        if state == "connecting":
+            b.setText("Connecting…"); b.setProperty("variant", "primary"); b.setEnabled(False)
+        elif state == "disconnect":
+            b.setText("Disconnect"); b.setProperty("variant", "danger"); b.setEnabled(True)
+        else:
+            b.setText("Connect"); b.setProperty("variant", "primary"); b.setEnabled(True)
+        b.style().unpolish(b); b.style().polish(b)
+
+    def _on_connect_btn(self):
+        if self.bridge.is_connected():
+            self._disconnect()
+        elif not self.bridge._connecting:
+            self._start_connect()
+
+    def _start_connect(self):
+        self._set_connect_state("connecting")
         self.bridge.connect()
 
+    def _disconnect(self):
+        self.bridge.drop_device()        # clears the spoof + releases the device (tunnel stays)
+        self.panel.clear_all()
+        self.panel.show_walk_pad(False)
+        self._set_connect_state("connect")
+        self.set_status("Not connected", theme.GREY)
+        self.set_hint("Disconnected. Click Connect to drive your iPhone again.")
+
     def _on_connected(self, device):
-        self.connect_btn.setEnabled(True)
+        self._set_connect_state("disconnect")
         self.panel.show_walk_pad(True)
         self.bridge.locate()             # fly the map to the user's current location
         self.set_hint("Connected — finding your location… drop a pin or search to move your iPhone.")
@@ -225,6 +250,7 @@ class MainWindow(QWidget):
             self.panel.stop_route()
             self.panel.show_walk_pad(False)
             self.bridge.drop_device()          # hand the device to the phone; keep the tunnel
+            self._set_connect_state("connect")
             self.connect_btn.setEnabled(False)
             self.restore_btn.setEnabled(False)
             self.portable_view.reset()
@@ -235,7 +261,7 @@ class MainWindow(QWidget):
         else:
             self.portable.stop()
             self.stack.setCurrentWidget(self.body)
-            self.connect_btn.setEnabled(True)
+            self._set_connect_state("connect")
             self.restore_btn.setEnabled(True)
             self.set_status("Not connected", theme.GREY)
             self.set_hint("Click Connect to drive your iPhone from this Mac.")
@@ -292,16 +318,16 @@ class MainWindow(QWidget):
             self.sidebar.move(0 if self.sidebar.is_open() else -self.sidebar.width(), 0)
 
     def _on_failed(self, msg: str):
-        self.connect_btn.setEnabled(True)
+        self._set_connect_state("connect")
         QMessageBox.critical(self, "Couldn’t connect", msg)
 
     def _on_dev_mode_required(self):
-        self.connect_btn.setEnabled(True)
+        self._set_connect_state("connect")
         if self._wizard is not None and self._wizard.isVisible():
             self._wizard.raise_()
             return
         self._wizard = DevModeWizard(self)
-        self._wizard.accepted.connect(self._on_connect_clicked)   # dev mode on → reconnect
+        self._wizard.accepted.connect(self._start_connect)   # dev mode on → reconnect
         self._wizard.show()
 
     # ---- menu-bar item + panic hotkey (native, best-effort) ------------

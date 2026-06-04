@@ -15,6 +15,7 @@ from .widgets import Segmented
 
 PRESETS = {"Walk": (1.4, "walking"), "Run": (3.3, "walking"),
            "Cycle": (6.0, "cycling"), "Drive": (13.5, "driving")}
+GERUNDS = {"Walk": "Walking", "Run": "Running", "Cycle": "Cycling", "Drive": "Driving"}
 
 
 def _btn(text, variant, w=None, h=32):
@@ -94,7 +95,7 @@ class ControlBar(QFrame):
 
     def _on_preset(self, name: str):
         spd, prof = PRESETS.get(name, (1.4, "walking"))
-        self.panel.set_preset(prof)
+        self.panel.set_preset(prof, GERUNDS.get(name, "Walking"))
         self._mph = name in ("Cycle", "Drive")   # vehicle speeds read in mph
         self.speed.setValue(int(spd * 10))        # fires _on_speed (uses self._mph)
 

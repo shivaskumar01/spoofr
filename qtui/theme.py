@@ -90,6 +90,10 @@ QPushButton[variant="ghost"] {{ background: transparent; color: {TEXT}; border: 
 QPushButton[variant="ghost"]:hover {{ background: {GHOST}; }}
 QPushButton[variant="ghost"]:disabled {{ color: {FAINT}; border-color: {BORDER}; }}
 
+QPushButton[variant="danger"] {{ background: #e5484d; color: #ffffff; }}
+QPushButton[variant="danger"]:hover {{ background: #ec5d62; }}
+QPushButton[variant="danger"]:disabled {{ background: {GHOST}; color: {FAINT}; }}
+
 QPushButton[variant="icon"] {{ background: transparent; color: {TEXT}; border-radius: 10px; padding: 0; }}
 QPushButton[variant="icon"]:hover {{ background: {GHOST}; }}
 

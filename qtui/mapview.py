@@ -116,6 +116,7 @@ class MapPanel(QFrame):
         # route state
         self.mode = "teleport"          # "teleport" | "route"
         self.profile = "walking"        # OSRM profile from the speed preset
+        self._transport = "Walking"     # display verb for the route status line
         self.loop = False
         self.bounce = False
         self.snap = False
@@ -270,6 +271,18 @@ class MapPanel(QFrame):
         """Stop any active route or walk (e.g. before restoring real GPS)."""
         self.stop_route()
         self._walk_release()
+
+    def clear_all(self):
+        """Full clear on disconnect: stop motion and remove the live marker + pin."""
+        self.stop_motion()
+        for ov in (self._pin_ov, self._live_ov):
+            if ov is not None:
+                self.map.remove_overlay(ov)
+        self._pin_ov = self._live_ov = self._live = None
+        self._live_pos = self._anchor = None
+        self.pending = None
+        self.set_btn.hide()
+        self.readout.hide()
 
     def on_restored(self):
         """Spoof cleared → drop the staged pin and stop wobbling, but KEEP the live
@@ -438,7 +451,8 @@ class MapPanel(QFrame):
         self.mode = mode
         if mode == "route":
             self.set_btn.hide()
-            self.hint.emit("Route mode — click the map to drop waypoints, then press Start.")
+            self.hint.emit("Route — click your STARTING point first (usually where you are), "
+                           "then your destination. Press Start to go.")
         else:
             if self.pending:
                 self.set_btn.show(); self.set_btn.raise_()
@@ -447,8 +461,9 @@ class MapPanel(QFrame):
     def set_speed(self, mps: float):
         self.speed = float(mps)
 
-    def set_preset(self, profile: str):
+    def set_preset(self, profile: str, gerund: str = "Walking"):
         self.profile = profile
+        self._transport = gerund        # "Walking"/"Running"/"Cycling"/"Driving"
 
     def set_loop(self, on: bool):
         self.loop = bool(on)
@@ -461,10 +476,15 @@ class MapPanel(QFrame):
 
     def _add_waypoint(self, lat: float, lon: float):
         self.points.append((lat, lon))
-        ov = self.map.add_marker(lat, lon, make_waypoint(len(self.points)), anchor="center", z=8)
+        n = len(self.points)
+        color = theme.GREEN if n == 1 else theme.BLUE   # green = start point
+        ov = self.map.add_marker(lat, lon, make_waypoint(n, color=color), anchor="center", z=8)
         self._wp_ovs.append(ov)
         self._redraw_path(self.points)
-        self.hint.emit(f"{len(self.points)} waypoint(s). Press Start to walk the route.")
+        if n == 1:
+            self.hint.emit("● Start set (green). Now click your destination — and any stops on the way.")
+        else:
+            self.hint.emit(f"{n} points · green = start. Add more stops, or press Start.")
 
     def _redraw_path(self, pts):
         if self._path_ov is not None:
@@ -543,7 +563,7 @@ class MapPanel(QFrame):
                     except Exception:
                         pass
                     self._walkStep.emit(lat, lon)
-                    self.hint.emit(f"Walking…  {i}/{total}   ({lat:.5f}, {lon:.5f})")
+                    self.hint.emit(f"{self._transport}…  {i}/{total}   ({lat:.5f}, {lon:.5f})")
                     if self._route_sleep(gen, 1.0):
                         self._routeDone.emit("Route stopped.")
                         return
@@ -567,8 +587,9 @@ class MapPanel(QFrame):
         n = len(self.points)
         for i in (1, n):                 # mark only start/end (GPX can be dense)
             la, lo = self.points[i - 1]
+            color = theme.GREEN if i == 1 else theme.BLUE
             self._wp_ovs.append(self.map.add_marker(
-                la, lo, make_waypoint(i), anchor="center", z=8))
+                la, lo, make_waypoint(i, color=color), anchor="center", z=8))
         self._redraw_path(self.points)
         self.map.set_view(self.points[0][0], self.points[0][1], 14)
 
