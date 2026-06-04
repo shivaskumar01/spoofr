@@ -41,7 +41,7 @@ import subprocess
 import threading
 import time
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -243,6 +243,7 @@ class Device:
     _stack: AsyncExitStack         # owns the RSD tunnel (closed last)
     _rsd: object                   # RSD connection, to rebuild the DVT/location session
     _loc_stack: AsyncExitStack     # owns the current DVT + LocationSimulation (rebuildable)
+    _lock: "threading.Lock" = field(default_factory=threading.Lock)
 
     def set(self, lat: float, lon: float) -> None:
         """Place the iPhone at (lat, lon).
@@ -250,18 +251,20 @@ class Device:
         The instruments (DVT) channel that backs LocationSimulation gets torn down
         if it sits idle (e.g. between connecting and the first 'Set location'),
         surfacing as 'channel is closed'. So on any failure we rebuild the DVT +
-        location channels on the existing tunnel and retry once.
+        location channels on the existing tunnel and retry once. The lock serializes
+        concurrent callers (route + jitter + walk) so a reopen never races a set.
         """
-        try:
-            _loop.run(self._location.set(lat, lon))
-        except Exception as first:
-            _log(f"location set failed ({first!r}); reopening DVT/location channel", exc=True)
+        with self._lock:
             try:
-                _loop.run(self._reopen())
                 _loop.run(self._location.set(lat, lon))
-            except Exception as second:
-                _log(f"reopen+retry failed: {second!r}", exc=True)
-                raise
+            except Exception as first:
+                _log(f"location set failed ({first!r}); reopening DVT/location channel", exc=True)
+                try:
+                    _loop.run(self._reopen())
+                    _loop.run(self._location.set(lat, lon))
+                except Exception as second:
+                    _log(f"reopen+retry failed: {second!r}", exc=True)
+                    raise
 
     async def _reopen(self) -> None:
         """Rebuild the DVT + LocationSimulation channels on the existing RSD tunnel."""

@@ -123,7 +123,7 @@ class MapPanel(QFrame):
         self._wp_ovs: list = []         # waypoint marker overlays
         self._path_ov = None            # route polyline overlay
         self._playing = False
-        self._route_stop = threading.Event()
+        self._route_gen = 0
 
         self._build_floating()
         self._build_walk_pad()
@@ -405,7 +405,7 @@ class MapPanel(QFrame):
         while not self._closing:
             try:
                 if (self._jitter_on and self.bridge.device is not None
-                        and self._anchor and not self._walking):
+                        and self._anchor and not self._walking and not self._playing):
                     jlat, jlon = _jitter(self._anchor[0], self._anchor[1], self._jitter_m)
                     try:
                         self.bridge.device.set(jlat, jlon)
@@ -493,22 +493,36 @@ class MapPanel(QFrame):
             return
         if self._playing:
             return
-        self._route_stop.clear()
+        self._route_gen += 1
+        gen = self._route_gen
         self._playing = True
         self._following = True
-        threading.Thread(target=self._route_worker, args=(list(self.points),), daemon=True).start()
+        threading.Thread(target=self._route_worker,
+                         args=(list(self.points), gen), daemon=True).start()
 
     def stop_route(self):
-        self._route_stop.set()
+        self._route_gen += 1          # invalidate any running route worker
         self._playing = False
         self._following = False
 
-    def _route_worker(self, pts):
+    def _route_stale(self, gen: int) -> bool:
+        return gen != self._route_gen or self.bridge.device is None
+
+    def _route_sleep(self, gen: int, dt: float) -> bool:
+        """Sleep up to dt; return True early if this route was stopped/superseded."""
+        end = time.time() + dt
+        while time.time() < end:
+            if self._route_stale(gen):
+                return True
+            time.sleep(0.05)
+        return self._route_stale(gen)
+
+    def _route_worker(self, pts, gen: int):
         try:
             if self.snap:
                 self.hint.emit("Snapping the route to roads…")
                 snapped = route.snap_to_roads(pts, self.profile)
-                if len(snapped) >= 2:
+                if len(snapped) >= 2 and not self._route_stale(gen):
                     pts = snapped
                     self._routeSnapped.emit(list(snapped))
             path = route.route_points(pts, max(self.speed, 0.3), dt=1.0)
@@ -521,7 +535,7 @@ class MapPanel(QFrame):
             dev = self.bridge.device
             while True:
                 for i, (lat, lon) in enumerate(seq, 1):
-                    if self._route_stop.is_set() or self.bridge.device is None:
+                    if self._route_stale(gen):
                         self._routeDone.emit("Route stopped.")
                         return
                     try:
@@ -530,14 +544,15 @@ class MapPanel(QFrame):
                         pass
                     self._walkStep.emit(lat, lon)
                     self.hint.emit(f"Walking…  {i}/{total}   ({lat:.5f}, {lon:.5f})")
-                    if self._route_stop.wait(1.0):
+                    if self._route_sleep(gen, 1.0):
                         self._routeDone.emit("Route stopped.")
                         return
                 if not repeat:
                     self._routeDone.emit("Route complete.")
                     return
         finally:
-            self._playing = False
+            if gen == self._route_gen:
+                self._playing = False
 
     def _on_route_done(self, msg: str):
         self._playing = False
