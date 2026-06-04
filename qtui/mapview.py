@@ -193,7 +193,7 @@ class MapPanel(QFrame):
     def _wire(self):
         self.map.clicked.connect(self._on_click)
         self.bridge.located.connect(self._on_located)
-        self.bridge.restored.connect(self.clear_markers)
+        self.bridge.restored.connect(self.on_restored)
         self.search.textEdited.connect(self._on_type)
         self.search.returnPressed.connect(self._on_enter)
         self._suggestReady.connect(self._show_suggestions)
@@ -266,15 +266,23 @@ class MapPanel(QFrame):
         self.set_btn.hide()
         self.committed.emit(lat, lon)
 
-    def clear_markers(self):
-        for ov in (self._pin_ov, self._live_ov):
-            if ov is not None:
-                self.map.remove_overlay(ov)
-        self._pin_ov = self._live_ov = self._live = None
-        self._live_pos = self._anchor = None
+    def stop_motion(self):
+        """Stop any active route or walk (e.g. before restoring real GPS)."""
+        self.stop_route()
+        self._walk_release()
+
+    def on_restored(self):
+        """Spoof cleared → drop the staged pin and stop wobbling, but KEEP the live
+        'You' marker on the map (re-located to the user's real/current location).
+        The marker should always be visible while connected."""
+        self.stop_motion()
+        if self._pin_ov is not None:
+            self.map.remove_overlay(self._pin_ov)
+            self._pin_ov = None
         self.pending = None
         self.set_btn.hide()
-        self.readout.hide()
+        self._anchor = None              # nothing to jitter around once the spoof is cleared
+        self.bridge.locate()             # re-show the live marker at the current location
 
     def goto(self, lat: float, lon: float, zoom: float = 15):
         if self.mode == "route":

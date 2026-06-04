@@ -108,7 +108,7 @@ class MainWindow(QWidget):
         self.panel.hint.connect(self.set_hint)
         self.panel.committed.connect(self.sidebar.add_recent)
         self.connect_btn.clicked.connect(self._on_connect_clicked)
-        self.restore_btn.clicked.connect(lambda: self.bridge.restore())
+        self.restore_btn.clicked.connect(self._on_restore)
         self.menu_btn.clicked.connect(self.sidebar.toggle)
         self.sidebar.usePlace.connect(self._use_place)
         self.sidebar.saveCurrent.connect(self._save_current)
@@ -193,6 +193,10 @@ class MainWindow(QWidget):
         self.panel.show_walk_pad(True)
         self.bridge.locate()             # fly the map to the user's current location
         self.set_hint("Connected — finding your location… drop a pin or search to move your iPhone.")
+
+    def _on_restore(self):
+        self.panel.stop_motion()         # stop any route/walk before clearing the spoof
+        self.bridge.restore()
 
     # ---- places + walking ----------------------------------------------
 
@@ -325,6 +329,7 @@ class MainWindow(QWidget):
         return self.settings.get("saved", [])
 
     def restore_real_gps(self):
+        self.panel.stop_motion()
         self.bridge.restore(panic=True)
 
     def _raise_window(self):
