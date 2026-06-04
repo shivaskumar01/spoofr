@@ -243,6 +243,7 @@ class Device:
     _stack: AsyncExitStack         # owns the RSD tunnel (closed last)
     _rsd: object                   # RSD connection, to rebuild the DVT/location session
     _loc_stack: AsyncExitStack     # owns the current DVT + LocationSimulation (rebuildable)
+    serial: str = ""               # usbmux serial, for liveness checks
     _lock: "threading.Lock" = field(default_factory=threading.Lock)
 
     def set(self, lat: float, lon: float) -> None:
@@ -311,13 +312,16 @@ class Device:
             if not repeat:
                 return
 
-    def close(self) -> None:
-        """Clear the spoof and tear down the tunnel/DVT/location session."""
+    def close(self, clear: bool = True) -> None:
+        """Tear down the DVT/location session + tunnel. With clear=False the
+        simulated location is LEFT ACTIVE on the iPhone (it persists until the user
+        resets it or the device reboots) — used when disconnecting on purpose."""
         async def shutdown():
-            try:
-                await self._location.clear()
-            except Exception:
-                pass
+            if clear:
+                try:
+                    await self._location.clear()
+                except Exception:
+                    pass
             try:
                 await self._loc_stack.aclose()
             finally:
@@ -341,6 +345,25 @@ def connect(on_status: Optional[StatusFn] = None) -> Device:
     say("Starting the tunnel…")
     _tunneld.ensure()
     return _loop.run(_open(say))
+
+
+def device_present(serial: str) -> bool:
+    """True if the iPhone with this usbmux serial is still connected (USB/Wi-Fi).
+    Used to notice an unplug. Blocking — call from a worker thread."""
+    if not serial:
+        return True
+    try:
+        return _loop.run(_device_present(serial))
+    except Exception:
+        return False
+
+
+async def _device_present(serial: str) -> bool:
+    try:
+        devices = await list_devices()
+    except Exception:
+        return True      # transient usbmux hiccup — don't declare a disconnect
+    return any(getattr(d, "serial", None) == serial for d in devices)
 
 
 def developer_mode_status() -> Optional[bool]:
@@ -443,7 +466,7 @@ async def _open(say: StatusFn) -> Device:
         raise
 
     return Device(name=name, ios=ios, _location=location, _stack=stack,
-                  _rsd=rsd, _loc_stack=loc_stack)
+                  _rsd=rsd, _loc_stack=loc_stack, serial=serial)
 
 
 async def _bounded(coro, seconds: float, message: str):

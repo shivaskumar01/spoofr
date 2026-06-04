@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QPushButton, QVBoxLayout, QWidget,
 )
 
-from . import geo, route, theme
+from . import geo, route, store, theme
 from .markers import PulseMarker, make_pin, make_waypoint
 from .tilemap import TileMap
 
@@ -82,9 +82,10 @@ class MapPanel(QFrame):
     _routeSnapped = Signal(object)
     _routeDone = Signal(str)
 
-    def __init__(self, bridge, parent=None):
+    def __init__(self, bridge, settings=None, parent=None):
         super().__init__(parent)
         self.bridge = bridge
+        self.settings = settings if settings is not None else {}
         self.setObjectName("MapFrame")
 
         lay = QVBoxLayout(self)
@@ -99,6 +100,7 @@ class MapPanel(QFrame):
         self._live_ov = None
         self._live_pos = None           # where the You dot is now
         self._anchor = None             # idle point the jitter wobbles around
+        self._active_spoof = None       # last location pushed to the phone (persisted)
         self._suggest_items: list[dict] = []
 
         # movement state (shared by walk pad + route)
@@ -261,11 +263,31 @@ class MapPanel(QFrame):
         # a teleport set landed: live marker, drop the staged pin, log a recent
         self._set_live(lat, lon)
         self._anchor = (lat, lon)
+        self._active_spoof = (lat, lon)
+        self.persist_spoof()
         if self._pin_ov is not None:
             self.map.remove_overlay(self._pin_ov); self._pin_ov = None
         self.pending = None
         self.set_btn.hide()
         self.committed.emit(lat, lon)
+
+    def persist_spoof(self):
+        """Remember (or forget) the location the iPhone is set to, so a later run
+        can show it and offer Restore GPS."""
+        if self._active_spoof:
+            self.settings["active_spoof"] = {"lat": self._active_spoof[0],
+                                             "lon": self._active_spoof[1]}
+        else:
+            self.settings.pop("active_spoof", None)
+        store.save(self.settings)
+
+    def restore_active_spoof(self, lat: float, lon: float):
+        """On reconnect: the phone is still set to this spot — show it and re-apply
+        so the app and device agree. Restore GPS then resets it."""
+        self._active_spoof = (lat, lon)
+        self._anchor = (lat, lon)
+        self.map.set_view(lat, lon, 15)
+        self.bridge.set_location(lat, lon)   # re-assert the spoof; located shows the marker
 
     def stop_motion(self):
         """Stop any active route or walk (e.g. before restoring real GPS)."""
@@ -295,6 +317,8 @@ class MapPanel(QFrame):
         self.pending = None
         self.set_btn.hide()
         self._anchor = None              # nothing to jitter around once the spoof is cleared
+        self._active_spoof = None        # phone is back on real GPS — forget the saved spoof
+        self.persist_spoof()
         self.bridge.locate()             # re-show the live marker at the current location
 
     def goto(self, lat: float, lon: float, zoom: float = 15):
@@ -395,6 +419,7 @@ class MapPanel(QFrame):
 
     def _on_walk_step(self, lat: float, lon: float):
         self._set_live(lat, lon)
+        self._active_spoof = (lat, lon)
         if self._following:
             self.map.pan_to(lat, lon)
 
@@ -580,6 +605,7 @@ class MapPanel(QFrame):
         self.hint.emit(msg)
         if self._live_pos:
             self._anchor = self._live_pos
+        self.persist_spoof()         # remember where the route left the phone
 
     def load_route(self, pts):
         self.clear_route()

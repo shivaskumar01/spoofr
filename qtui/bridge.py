@@ -32,11 +32,13 @@ class DeviceBridge(QObject):
     # (lat, lon) just pushed to the phone, for the live marker
     located = Signal(float, float)
     currentLocation = Signal(float, float)   # the Mac's location, found on connect
+    deviceLost = Signal()                    # the iPhone was unplugged / vanished
 
     def __init__(self):
         super().__init__()
         self.device: core.Device | None = None
         self._connecting = False
+        self._monitor_on = False
 
     # ---- connect --------------------------------------------------------
 
@@ -59,6 +61,7 @@ class DeviceBridge(QObject):
             self.device = device
             self.status.emit(f"Connected  ·  {device.name}  ·  iOS {device.ios}", theme.GREEN)
             self.connected.emit(device)
+            self._start_monitor()
         except core.DeveloperModeRequired:
             self.status.emit("Developer Mode needed", theme.AMBER)
             self.devModeRequired.emit()
@@ -115,19 +118,59 @@ class DeviceBridge(QObject):
     def is_connected(self) -> bool:
         return self.device is not None
 
+    # ---- liveness monitor (notice an unplug) ----------------------------
+
+    def _start_monitor(self):
+        if self._monitor_on:
+            return
+        self._monitor_on = True
+        threading.Thread(target=self._monitor_worker, daemon=True).start()
+
+    def _monitor_worker(self):
+        import time
+        import core
+        misses = 0
+        while self._monitor_on:
+            time.sleep(3.0)
+            dev = self.device
+            if dev is None or not self._monitor_on:
+                return
+            if core.device_present(dev.serial):
+                misses = 0
+            else:
+                misses += 1
+                if misses >= 2:             # ~6s gone → really unplugged (not a blip)
+                    self._monitor_on = False
+                    self.device = None      # session is dead; the spoof stays on the phone
+                    self.deviceLost.emit()
+                    return
+
+    # ---- disconnect / teardown ------------------------------------------
+
+    def disconnect(self):
+        """User-initiated disconnect: close the session but LEAVE the spoofed
+        location active on the iPhone (it persists until reset/reboot)."""
+        self._monitor_on = False
+        dev, self.device = self.device, None
+        if dev:
+            threading.Thread(target=lambda: dev.close(clear=False), daemon=True).start()
+
     def drop_device(self):
         """Release the device session (hand off to the phone) but leave the
         Wi-Fi tunnel up, so iPhone mode can reuse it."""
+        self._monitor_on = False
         dev, self.device = self.device, None
         if dev:
             threading.Thread(target=dev.close, daemon=True).start()
 
     def close(self):
-        """Tear the session + tunnel down. Call on app exit."""
+        """Tear the session + tunnel down on app exit. Leaves the spoof active on
+        the iPhone (clear=False) so it persists between runs."""
+        self._monitor_on = False
         dev, self.device = self.device, None
         if dev:
             try:
-                dev.close()
+                dev.close(clear=False)
             except Exception:
                 pass
         import sys

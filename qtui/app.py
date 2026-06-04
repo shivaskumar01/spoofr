@@ -71,7 +71,7 @@ class MainWindow(QWidget):
         bl = QVBoxLayout(self.body)
         bl.setContentsMargins(14, 6, 14, 6)
         bl.setSpacing(0)
-        self.panel = MapPanel(self.bridge)
+        self.panel = MapPanel(self.bridge, self.settings)
         bl.addWidget(self.panel, 1)
         self.hint = QLabel("Click Connect to drive your iPhone from this Mac.")
         self.hint.setStyleSheet(f"color: {theme.MUTED};")
@@ -105,6 +105,7 @@ class MainWindow(QWidget):
         self.bridge.connected.connect(self._on_connected)
         self.bridge.failed.connect(self._on_failed)
         self.bridge.devModeRequired.connect(self._on_dev_mode_required)
+        self.bridge.deviceLost.connect(self._on_device_lost)
         self.panel.hint.connect(self.set_hint)
         self.panel.committed.connect(self.sidebar.add_recent)
         self.connect_btn.clicked.connect(self._on_connect_btn)
@@ -206,18 +207,36 @@ class MainWindow(QWidget):
         self.bridge.connect()
 
     def _disconnect(self):
-        self.bridge.drop_device()        # clears the spoof + releases the device (tunnel stays)
+        self.panel.persist_spoof()       # remember the set location for next time
+        self.bridge.disconnect()         # close session WITHOUT clearing — spoof stays on the phone
         self.panel.clear_all()
         self.panel.show_walk_pad(False)
         self._set_connect_state("connect")
         self.set_status("Not connected", theme.GREY)
-        self.set_hint("Disconnected. Click Connect to drive your iPhone again.")
+        self.set_hint("Disconnected — your set location stays on the iPhone. "
+                      "Reconnect and Restore GPS to reset it.")
+
+    def _on_device_lost(self):
+        # the iPhone was unplugged — the spoof persists on the device
+        self.panel.persist_spoof()
+        self.panel.clear_all()
+        self.panel.show_walk_pad(False)
+        self._set_connect_state("connect")
+        self.set_status("Disconnected", theme.GREY)
+        self.set_hint("iPhone unplugged — your set location stays on the phone. "
+                      "Reconnect and Restore GPS to reset it.")
 
     def _on_connected(self, device):
         self._set_connect_state("disconnect")
         self.panel.show_walk_pad(True)
-        self.bridge.locate()             # fly the map to the user's current location
-        self.set_hint("Connected — finding your location… drop a pin or search to move your iPhone.")
+        spoof = self.settings.get("active_spoof")
+        if spoof:
+            self.panel.restore_active_spoof(spoof["lat"], spoof["lon"])
+            self.set_hint("Your iPhone is still set to your last location — Restore GPS to reset, "
+                          "or pick a new spot.")
+        else:
+            self.bridge.locate()         # fly the map to the user's current location
+            self.set_hint("Connected — finding your location… drop a pin or search to move your iPhone.")
 
     def _on_restore(self):
         self.panel.stop_motion()         # stop any route/walk before clearing the spoof
@@ -366,6 +385,7 @@ class MainWindow(QWidget):
 
     def closeEvent(self, e):
         self.panel._closing = True       # stop the jitter worker
+        self.panel.persist_spoof()       # keep + remember the set location across runs
         self.portable.stop()
         if self._macui:
             try:
