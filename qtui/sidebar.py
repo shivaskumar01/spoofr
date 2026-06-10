@@ -53,6 +53,7 @@ class Sidebar(QFrame):
     importGpx = Signal()
     exportGpx = Signal()
     placesChanged = Signal()
+    goWireless = Signal()
 
     def __init__(self, settings: dict, parent=None):
         super().__init__(parent)
@@ -258,7 +259,40 @@ class Sidebar(QFrame):
                                        self.settings.get("jitter", False), self._on_jitter))
         lay.addWidget(_label("Jitter wobbles a held location a few metres so apps see a natural, "
                              "noisy GPS fix.", 12, theme.MUTED))
+        lay.addSpacing(12)
+        lay.addWidget(_label("WIRELESS", mono=True, color=theme.MUTED))
+        self._wifi_btn = QPushButton("⚡  Go wireless (one-time)")
+        self._wifi_btn.setProperty("variant", "soft")
+        self._wifi_btn.setFixedHeight(34)
+        self._wifi_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._wifi_btn.clicked.connect(lambda: self.goWireless.emit())
+        lay.addWidget(self._wifi_btn)
+        initial = ("✓  Wireless is on — the cable is optional."
+                   if self.settings.get("wireless_on")
+                   else "With the cable in, click once. After that you can connect and "
+                        "control the iPhone over Wi-Fi — no cable.")
+        self._wifi_status = _label(initial, 12,
+                                   theme.GREEN if self.settings.get("wireless_on") else theme.MUTED)
+        lay.addWidget(self._wifi_status)
         return area
+
+    def set_wireless_busy(self, busy: bool):
+        self._wifi_btn.setEnabled(not busy)
+        self._wifi_btn.setText("Enabling…" if busy else "⚡  Go wireless (one-time)")
+        if busy:
+            self.set_wireless_status("Talking to the iPhone over the cable…", theme.AMBER)
+
+    def set_wireless_status(self, text: str, color: str = theme.MUTED):
+        self._wifi_status.setText(text)
+        self._wifi_status.setStyleSheet(f"color: {color};")
+
+    def refresh_wireless(self, on: bool):
+        """Called after each connect with the device's actual switch state."""
+        if on:
+            self.set_wireless_status("✓  Wireless is on — the cable is optional.", theme.GREEN)
+        else:
+            self.set_wireless_status("Wireless is off — with the cable in, click above "
+                                     "to enable it.", theme.MUTED)
 
     def _switch_row(self, text, on, cb):
         row = QFrame()

@@ -106,6 +106,10 @@ class MainWindow(QWidget):
         self.bridge.failed.connect(self._on_failed)
         self.bridge.devModeRequired.connect(self._on_dev_mode_required)
         self.bridge.deviceLost.connect(self._on_device_lost)
+        self.bridge.reconnecting.connect(self._on_reconnecting)
+        self.bridge.visible.connect(self._on_visible)
+        self.bridge.wirelessResult.connect(self._on_wireless_result)
+        self.sidebar.goWireless.connect(self._go_wireless)
         self.panel.hint.connect(self.set_hint)
         self.panel.committed.connect(self.sidebar.add_recent)
         self.connect_btn.clicked.connect(self._on_connect_btn)
@@ -139,6 +143,9 @@ class MainWindow(QWidget):
         self._macui = None
         self.sidebar.placesChanged.connect(self._refresh_macui)
         QTimer.singleShot(300, self._install_macui)
+
+        # idle pre-flight: light up the pill when an iPhone is visible
+        self.bridge.start_visibility()
 
     def _build_header(self) -> QWidget:
         bar = QFrame()
@@ -186,18 +193,23 @@ class MainWindow(QWidget):
     # ---- connect / restore ---------------------------------------------
 
     def _set_connect_state(self, state: str):
-        """state: 'connect' (blue) | 'connecting' (disabled) | 'disconnect' (red)."""
+        """state: 'connect' (blue) | 'connecting' (disabled) | 'disconnect' (red)
+        | 'reconnecting' (ghost; click = stop trying)."""
         b = self.connect_btn
         if state == "connecting":
             b.setText("Connecting…"); b.setProperty("variant", "primary"); b.setEnabled(False)
         elif state == "disconnect":
             b.setText("Disconnect"); b.setProperty("variant", "danger"); b.setEnabled(True)
+        elif state == "reconnecting":
+            b.setText("Reconnecting…"); b.setProperty("variant", "ghost"); b.setEnabled(True)
         else:
             b.setText("Connect"); b.setProperty("variant", "primary"); b.setEnabled(True)
         b.style().unpolish(b); b.style().polish(b)
 
     def _on_connect_btn(self):
-        if self.bridge.is_connected():
+        if self.bridge.is_reconnecting():
+            self.bridge.cancel_reconnect()       # the button reads “Reconnecting…”
+        elif self.bridge.is_connected():
             self._disconnect()
         elif not self.bridge._connecting:
             self._start_connect()
@@ -217,14 +229,31 @@ class MainWindow(QWidget):
                       "Reconnect and Restore GPS to reset it.")
 
     def _on_device_lost(self):
-        # the iPhone was unplugged — the spoof persists on the device
+        # gone for good (reconnect gave up or was stopped) — spoof persists on the phone
         self.panel.persist_spoof()
         self.panel.clear_all()
         self.panel.show_walk_pad(False)
         self._set_connect_state("connect")
         self.set_status("Disconnected", theme.GREY)
-        self.set_hint("iPhone unplugged — your set location stays on the phone. "
+        self.set_hint("Lost the iPhone — your set location stays on the phone. "
                       "Reconnect and Restore GPS to reset it.")
+
+    def _on_reconnecting(self, attempt: int):
+        self._set_connect_state("reconnecting")
+        if attempt == 1:
+            self.set_hint("Connection dropped — reconnecting… your set location stays on "
+                          "the iPhone. Click “Reconnecting…” to stop trying.")
+
+    def _on_visible(self, kinds: str):
+        b = self.bridge
+        if b.is_connected() or b._connecting or b.is_reconnecting():
+            return
+        if self.controlbar.app_mode.value() == "iPhone":
+            return
+        if kinds:
+            self.set_status(f"Ready  ·  iPhone on {kinds}", theme.LIVE)
+        else:
+            self.set_status("Not connected", theme.GREY)
 
     def _on_connected(self, device):
         self._set_connect_state("disconnect")
@@ -237,6 +266,11 @@ class MainWindow(QWidget):
         else:
             self.bridge.locate()         # fly the map to the user's current location
             self.set_hint("Connected — finding your location… drop a pin or search to move your iPhone.")
+        # remember + surface whether the cable is still required
+        wireless_on = bool(getattr(device, "wireless_on", False))
+        self.settings["wireless_on"] = wireless_on
+        store.save(self.settings)
+        self.sidebar.refresh_wireless(wireless_on)
 
     def _on_restore(self):
         self.panel.stop_motion()         # stop any route/walk before clearing the spoof
@@ -261,6 +295,20 @@ class MainWindow(QWidget):
         self.sidebar.close_menu()
         if self.panel.import_gpx():
             self.controlbar.set_mode("Route")
+
+    # ---- one-time wireless enable ---------------------------------------
+
+    def _go_wireless(self):
+        self.sidebar.set_wireless_busy(True)
+        self.bridge.go_wireless()
+
+    def _on_wireless_result(self, ok: bool, msg: str):
+        self.sidebar.set_wireless_busy(False)
+        self.sidebar.set_wireless_status(("✓  " if ok else "⚠  ") + msg,
+                                         theme.GREEN if ok else theme.RED)
+        if ok:
+            self.settings["wireless_on"] = True
+            store.save(self.settings)
 
     # ---- iPhone (portable QR) mode -------------------------------------
 

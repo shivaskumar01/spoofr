@@ -244,6 +244,8 @@ class Device:
     _rsd: object                   # RSD connection, to rebuild the DVT/location session
     _loc_stack: AsyncExitStack     # owns the current DVT + LocationSimulation (rebuildable)
     serial: str = ""               # usbmux serial, for liveness checks
+    link: str = "USB"              # how the phone is visible: "USB" / "Wi-Fi" / "USB + Wi-Fi"
+    wireless_on: bool = False      # EnableWifiConnections — cable-free control available
     _lock: "threading.Lock" = field(default_factory=threading.Lock)
 
     def set(self, lat: float, lon: float) -> None:
@@ -380,6 +382,85 @@ async def _device_present(serial: str) -> bool:
     return any(getattr(d, "serial", None) == serial for d in devices)
 
 
+def _kinds_to_link(kinds: set[str]) -> str:
+    has_usb = "USB" in kinds
+    has_net = "Network" in kinds
+    if has_usb and has_net:
+        return "USB + Wi-Fi"
+    return "USB" if has_usb else ("Wi-Fi" if has_net else "")
+
+
+def link_status(serial: str) -> Optional[str]:
+    """How this iPhone is visible right now: "USB" / "Wi-Fi" / "USB + Wi-Fi",
+    "" if it's definitively gone, or None on a transient usbmux hiccup (treat as
+    no-information, not a disconnect). Blocking — call from a worker thread."""
+    if not serial:
+        return None
+    try:
+        return _loop.run(_link_status(serial))
+    except Exception:
+        return None
+
+
+async def _link_status(serial: str) -> Optional[str]:
+    try:
+        devices = await list_devices()
+    except Exception:
+        return None
+    kinds = {d.connection_type for d in devices if getattr(d, "serial", None) == serial}
+    return _kinds_to_link(kinds)
+
+
+def visible_kinds() -> str:
+    """How *any* iPhone is visible right now ("" if none) — the idle pre-flight
+    that lights up Connect before the user clicks. Blocking — worker thread."""
+    try:
+        return _loop.run(_visible_kinds())
+    except Exception:
+        return ""
+
+
+async def _visible_kinds() -> str:
+    try:
+        devices = await list_devices()
+    except Exception:
+        return ""
+    return _kinds_to_link({d.connection_type for d in devices})
+
+
+def enable_wireless() -> None:
+    """One-time switch: tell the iPhone to stay reachable over Wi-Fi (the classic
+    "Show this iPhone when on Wi-Fi"). Needs the cable for this one call; after
+    it, discovery/lockdown/tunnel all work cable-free on the same network.
+    Raises SpooferError with a user-facing message on failure."""
+    _loop.run(_enable_wireless())
+
+
+async def _enable_wireless():
+    try:
+        devices = await list_devices()
+    except Exception:
+        devices = []
+    usb = [d for d in devices if d.connection_type == "USB"]
+    if not usb:
+        raise SpooferError("Plug the iPhone in with the cable for this one-time switch "
+                           "(unlock it first), then click again.")
+    lockdown = await _bounded(create_using_usbmux(usb[0].serial), 15,
+                              "The iPhone didn’t respond. Unlock it and try again.")
+    try:
+        await asyncio.wait_for(lockdown.set_enable_wifi_connections(True), 15)
+        on = bool(await asyncio.wait_for(lockdown.get_enable_wifi_connections(), 15))
+        if not on:
+            raise SpooferError("The iPhone didn’t confirm the switch — unlock it and try again.")
+    except asyncio.TimeoutError:
+        raise SpooferError("The iPhone didn’t respond. Unlock it and try again.") from None
+    finally:
+        try:
+            await lockdown.close()
+        except Exception:
+            pass
+
+
 def developer_mode_status() -> Optional[bool]:
     """True/False if an iPhone is connected, else None. Over USB — no root/tunnel."""
     return _loop.run(_dev_mode_status())
@@ -431,10 +512,15 @@ async def _open(say: StatusFn) -> Device:
     muxed = await _bounded(list_devices(), 10,
                            "Couldn’t reach usbmuxd (the USB device service).")
     if not muxed:
-        raise SpooferError("No iPhone reachable. Plug it in and tap “Trust”, or — for "
-                           "cable-free — turn on “Show this iPhone when on Wi-Fi” in Finder "
-                           "(while plugged in, once) and stay on the same Wi-Fi.")
+        raise SpooferError("No iPhone reachable. Plug it in and tap “Trust”, or go "
+                           "cable-free: menu ▸ Settings ▸ “Go wireless” (one-time, with "
+                           "the cable in), then stay on the same Wi-Fi.")
+    # prefer the cable when both links exist — faster and steadier for the
+    # lockdown/mount phase; Wi-Fi-only devices still work
+    muxed.sort(key=lambda d: d.connection_type != "USB")
     serial = muxed[0].serial
+    link = _kinds_to_link({d.connection_type for d in muxed
+                           if getattr(d, "serial", None) == serial}) or "USB"
 
     lockdown = await _bounded(create_using_usbmux(serial), 15,
                              "The iPhone didn’t respond. Re-plug it, unlock it, and trust this Mac.")
@@ -442,6 +528,10 @@ async def _open(say: StatusFn) -> Device:
         name = lockdown.all_values.get("DeviceName", "iPhone")
         ios = lockdown.product_version
         udid = lockdown.udid or serial
+        try:
+            wireless_on = bool(await asyncio.wait_for(lockdown.get_enable_wifi_connections(), 5))
+        except Exception:
+            wireless_on = False
         say("Checking Developer Mode…")
         try:
             dev_mode_on = bool(await lockdown.get_developer_mode_status())
@@ -480,7 +570,8 @@ async def _open(say: StatusFn) -> Device:
         raise
 
     return Device(name=name, ios=ios, _location=location, _stack=stack,
-                  _rsd=rsd, _loc_stack=loc_stack, serial=serial)
+                  _rsd=rsd, _loc_stack=loc_stack, serial=serial,
+                  link=link, wireless_on=wireless_on)
 
 
 async def _bounded(coro, seconds: float, message: str):
