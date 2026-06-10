@@ -282,8 +282,22 @@ class Device:
         self._location = location
 
     def clear(self) -> None:
-        """Drop the spoof; iOS reacquires the real GPS fix in a few seconds."""
-        _loop.run(self._location.clear())
+        """Drop the spoof; iOS reacquires the real GPS fix in a few seconds.
+
+        Same idle-channel recovery as set(): the DVT channel may have been torn
+        down while sitting connected, so on failure rebuild it and retry once.
+        """
+        with self._lock:
+            try:
+                _loop.run(self._location.clear())
+            except Exception as first:
+                _log(f"location clear failed ({first!r}); reopening DVT/location channel", exc=True)
+                try:
+                    _loop.run(self._reopen())
+                    _loop.run(self._location.clear())
+                except Exception as second:
+                    _log(f"reopen+retry failed: {second!r}", exc=True)
+                    raise
 
     def play_route(self, points, speed_mps, stop: threading.Event,
                    dt: float = 1.0, on_step: Optional[Callable] = None,

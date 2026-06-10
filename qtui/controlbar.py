@@ -97,7 +97,9 @@ class ControlBar(QFrame):
         spd, prof = PRESETS.get(name, (1.4, "walking"))
         self.panel.set_preset(prof, GERUNDS.get(name, "Walking"))
         self._mph = name in ("Cycle", "Drive")   # vehicle speeds read in mph
-        self.speed.setValue(int(spd * 10))        # fires _on_speed (uses self._mph)
+        self.speed.setValue(int(spd * 10))
+        self._on_speed(self.speed.value())        # setValue doesn't fire if unchanged;
+                                                  # re-render so the unit always matches
 
     def _on_speed(self, v: int):
         spd = v / 10.0

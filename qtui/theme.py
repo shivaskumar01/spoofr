@@ -102,7 +102,6 @@ QLineEdit {{
     background: transparent; border: none; color: {TEXT};
     selection-background-color: {BLUE}; font-size: 14px;
 }}
-QLineEdit::placeholder {{ color: {FAINT}; }}
 
 /* ---- scrollbars (thin, unobtrusive) ---- */
 QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; }}
@@ -128,6 +127,8 @@ def apply_theme(app: QApplication) -> None:
     pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
     pal.setColor(QPalette.ColorRole.ToolTipBase, QColor(ELEV))
     pal.setColor(QPalette.ColorRole.ToolTipText, QColor(TEXT))
+    # Qt has no ::placeholder CSS — the palette role is the real mechanism
+    pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(FAINT))
     app.setPalette(pal)
     app.setFont(ui_font(13))
     app.setStyleSheet(STYLESHEET)

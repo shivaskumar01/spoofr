@@ -21,13 +21,16 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QUrl, QStandardPaths
+from PySide6.QtCore import (
+    QEasingCurve, QPointF, QRect, QRectF, Qt, Signal, QStandardPaths, QTimer,
+    QUrl, QVariantAnimation,
+)
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtNetwork import (
     QNetworkAccessManager, QNetworkDiskCache, QNetworkRequest, QNetworkReply,
 )
 from PySide6.QtWidgets import (
-    QGraphicsScene, QGraphicsView, QGraphicsPixmapItem, QGraphicsPathItem,
+    QApplication, QGraphicsScene, QGraphicsView, QGraphicsPixmapItem, QGraphicsPathItem,
 )
 
 from . import theme
@@ -91,6 +94,10 @@ class TileMap(QGraphicsView):
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self.grabGesture(Qt.GestureType.PinchGesture)
+        # never take keyboard focus: arrow keys must reach the window's walk
+        # handler, not QGraphicsView's built-in scrolling (which would shift the
+        # view without updating our center/tile bookkeeping)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         # --- async tile loading w/ disk cache ---
         self._nam = QNetworkAccessManager(self)
@@ -100,15 +107,30 @@ class TileMap(QGraphicsView):
         cache.setCacheDirectory(str(cache_dir))
         cache.setMaximumCacheSize(256 * 1024 * 1024)   # 256 MB on disk
         self._nam.setCache(cache)
+        self._nam.setTransferTimeout(10_000)   # a stalled fetch errors out → retried
         self._nam.finished.connect(self._on_tile)
         self._tiles: dict[tuple[int, int, int], QGraphicsPixmapItem] = {}
-        self._pending: set[tuple[int, int, int]] = set()
+        self._inflight: dict[tuple[int, int, int], QNetworkReply] = {}
+        self._failed: set[tuple[int, int, int]] = set()   # re-request on next layout
 
         self._points: list[_PointOverlay] = []
         self._paths: list[_PathOverlay] = []
         self._press_pos = None
         self._dragged = False
         self._tint: QColor | None = None   # brightness overlay
+        self._based_z: int | None = None   # integer level the scene is projected at
+
+        # eased zoom for buttons / double-click / mouse wheel (pinch stays live)
+        self._zoom_anim: QVariantAnimation | None = None
+        self._zoom_target: float = self._zoom
+
+        # single-click is emitted after a beat so a double-click (zoom) can
+        # cancel it — otherwise zooming would also drop a pin / waypoint
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.setInterval(min(QApplication.doubleClickInterval(), 250))
+        self._click_timer.timeout.connect(self._emit_click)
+        self._click_ll: tuple[float, float] | None = None
 
     # ---- web-mercator projection (scene coords are tile*TILE at level self._z) ----
 
@@ -166,13 +188,14 @@ class TileMap(QGraphicsView):
         self._set_zoom(z, anchor)
 
     def set_view(self, lat: float, lon: float, z: float):
+        self._stop_zoom_anim()
         self._clat, self._clon = lat, lon
         self._zoom = _clamp(float(z), self.min_zoom, self.max_zoom)
         self._z = int(round(self._zoom))
         self._apply_view()
 
     def zoom_at(self, step: float, view_pos=None):
-        self._set_zoom(self._zoom + step, view_pos)
+        self._animate_zoom_by(step, view_pos)
 
     # markers: pixmap pinned to a coordinate, constant screen size
     def add_marker(self, lat: float, lon: float, pixmap: QPixmap, anchor: str = "s", z: int = 10):
@@ -242,15 +265,53 @@ class TileMap(QGraphicsView):
             self._clon += before[1] - after[1]
             self._apply_view()
 
+    # ---- eased zoom (buttons / double-click / wheel) ----
+
+    def _stop_zoom_anim(self):
+        if self._zoom_anim is not None:
+            self._zoom_anim.stop()
+            self._zoom_anim = None
+
+    def _animate_zoom_by(self, step: float, view_pos=None):
+        # accumulate onto the in-flight target so rapid clicks/notches chain
+        base = self._zoom_target if self._zoom_anim is not None else self._zoom
+        self._animate_zoom_to(base + step, view_pos)
+
+    def _animate_zoom_to(self, target: float, view_pos=None):
+        target = _clamp(float(target), self.min_zoom, self.max_zoom)
+        self._stop_zoom_anim()
+        if abs(target - self._zoom) < 1e-6:
+            return
+        self._zoom_target = target
+        a = QVariantAnimation(self)
+        a.setStartValue(float(self._zoom))
+        a.setEndValue(target)
+        a.setDuration(170)
+        a.setEasingCurve(QEasingCurve.Type.OutCubic)
+        a.valueChanged.connect(lambda v: self._set_zoom(float(v), view_pos))
+        a.finished.connect(self._zoom_anim_done)
+        a.start()
+        self._zoom_anim = a
+
+    def _zoom_anim_done(self):
+        # only natural completion lands here (stop() doesn't emit finished), so a
+        # later pinch/wheel re-bases on the real current zoom, not a stale target
+        if self._zoom_anim is not None and self.sender() is self._zoom_anim:
+            self._zoom_anim = None
+
     def _apply_view(self):
-        """Re-base the scene at the current integer zoom, set the GPU scale, recenter,
-        then lay out tiles + overlays. Cheap enough to call every gesture frame."""
-        w = self._world()
-        self._scene.setSceneRect(0, 0, w, w)
+        """Set the GPU scale + recenter, then lay out tiles. The scene is only
+        re-based (rect + overlay reprojection — O(overlay points)) when the
+        integer level actually flips, so pinch frames stay cheap even with a
+        dense GPX route on the map."""
+        if self._z != self._based_z:
+            w = self._world()
+            self._scene.setSceneRect(0, 0, w, w)
+            self._reproject()
+            self._based_z = self._z
         self.resetTransform()
         self.scale(self._scale, self._scale)
         self.centerOn(self._scene_pt(self._clat, self._clon))
-        self._reproject()
         self._layout_tiles()
         self.viewChanged.emit()
 
@@ -279,17 +340,72 @@ class TileMap(QGraphicsView):
         y0 = max(0, int((vis.top() - margin) // TILE))
         y1 = min(n - 1, int((vis.bottom() + margin) // TILE))
         needed = set()
+        fresh = []
         for tx in range(x0, x1 + 1):
             for ty in range(y0, y1 + 1):
                 key = (z, tx, ty)
                 needed.add(key)
                 if key not in self._tiles:
                     self._make_tile(key)
+                    fresh.append(key)
+                elif key in self._failed:      # earlier fetch errored — try again
+                    self._failed.discard(key)
+                    self._request(key)
+        # seed brand-new tiles with imagery rescaled from the level we're leaving,
+        # BEFORE that level is pruned — zooming never blanks to the background
+        for key in fresh:
+            ph = self._placeholder(key)
+            if ph is not None:
+                self._tiles[key].setPixmap(ph)
         # prune anything off-screen or from a stale zoom level
         for key in list(self._tiles):
             if key not in needed:
                 self._scene.removeItem(self._tiles.pop(key))
-                self._pending.discard(key)
+                self._failed.discard(key)
+                reply = self._inflight.pop(key, None)
+                if reply is not None:
+                    reply.abort()   # stop wasting the connection pool on it
+
+    def _placeholder(self, key) -> QPixmap | None:
+        """A stand-in for a not-yet-loaded tile, rescaled from tiles we already
+        have at a nearby level: crop of an ancestor (zooming in) or a composite
+        of the four children (zooming out)."""
+        z, x, y = key
+        # crop from an ancestor
+        for d in (1, 2, 3):
+            src = self._tiles.get((z - d, x >> d, y >> d))
+            if src is None or src.pixmap().isNull():
+                continue
+            pm = src.pixmap()                       # raw device pixels below
+            f = 1 << d
+            w, h = pm.width() // f, pm.height() // f
+            if w < 1 or h < 1:
+                break
+            sub = pm.copy((x % f) * w, (y % f) * h, w, h)
+            out = sub.scaled(pm.width(), pm.height(),
+                             Qt.AspectRatioMode.IgnoreAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+            out.setDevicePixelRatio(pm.devicePixelRatio())
+            return out
+        # compose from children
+        kids = [self._tiles.get((z + 1, 2 * x + dx, 2 * y + dy))
+                for dy in (0, 1) for dx in (0, 1)]
+        pms = [k.pixmap() if k is not None and not k.pixmap().isNull() else None
+               for k in kids]
+        ref = next((p for p in pms if p is not None), None)
+        if ref is None:
+            return None
+        W, H = ref.width(), ref.height()
+        out = QPixmap(W, H)
+        out.fill(QColor(theme.MAP_BG))
+        p = QPainter(out)
+        for i, pm in enumerate(pms):
+            if pm is not None:
+                dx, dy = i % 2, i // 2
+                p.drawPixmap(QRect(dx * W // 2, dy * H // 2, W // 2, H // 2), pm)
+        p.end()
+        out.setDevicePixelRatio(ref.devicePixelRatio())
+        return out
 
     def _make_tile(self, key):
         z, x, y = key
@@ -302,7 +418,7 @@ class TileMap(QGraphicsView):
         self._request(key)
 
     def _request(self, key):
-        if key in self._pending:
+        if key in self._inflight:
             return
         z, x, y = key
         sub = SUBDOMAINS[(x + y) % len(SUBDOMAINS)]
@@ -315,21 +431,27 @@ class TileMap(QGraphicsView):
         req.setAttribute(QNetworkRequest.Attribute.HttpPipeliningAllowedAttribute, True)
         req.setRawHeader(b"User-Agent", b"Spoofr/1.0 (macOS location utility)")
         req.setAttribute(QNetworkRequest.Attribute.User, key)
-        self._pending.add(key)
-        self._nam.get(req)
+        self._inflight[key] = self._nam.get(req)
 
     def _on_tile(self, reply: QNetworkReply):
         key = reply.request().attribute(QNetworkRequest.Attribute.User)
-        self._pending.discard(tuple(key) if key else key)
+        key = tuple(key) if key else key
+        self._inflight.pop(key, None)
         try:
-            if reply.error() == QNetworkReply.NetworkError.NoError:
+            err = reply.error()
+            if err == QNetworkReply.NetworkError.NoError:
                 pix = QPixmap()
                 pix.loadFromData(reply.readAll())
                 if not pix.isNull():
                     pix.setDevicePixelRatio(2.0 if self._retina else 1.0)
-                    item = self._tiles.get(tuple(key) if key else key)
+                    item = self._tiles.get(key)
                     if item is not None:
                         item.setPixmap(pix)
+            elif err != QNetworkReply.NetworkError.OperationCanceledError:
+                # failed (offline blip / HTTP error / timeout): mark it so the
+                # next layout pass re-requests instead of leaving a hole forever
+                if key in self._tiles:
+                    self._failed.add(key)
         finally:
             reply.deleteLater()
 
@@ -337,9 +459,14 @@ class TileMap(QGraphicsView):
 
     def wheelEvent(self, e):
         d = e.pixelDelta()
-        if d.isNull():
-            d = e.angleDelta() / 8
-        self._pan_pixels(d.x(), d.y())
+        if not d.isNull():
+            # trackpad two-finger scroll: pan (with the OS's own momentum)
+            self._pan_pixels(d.x(), d.y())
+        else:
+            # an external mouse wheel: zoom at the cursor, like every map app
+            notches = e.angleDelta().y() / 120.0
+            if notches:
+                self._animate_zoom_by(notches * 0.6, e.position().toPoint())
         e.accept()
 
     def _pan_pixels(self, dx: float, dy: float):
@@ -357,6 +484,7 @@ class TileMap(QGraphicsView):
             if g is not None:
                 sf = g.scaleFactor()
                 if sf and sf != 1.0:
+                    self._stop_zoom_anim()      # live fingers beat a running ease
                     pos = self.mapFromGlobal(self.cursor().pos())
                     self._set_zoom(self._zoom + math.log2(sf), pos)
                 e.accept()
@@ -373,6 +501,8 @@ class TileMap(QGraphicsView):
         if self._press_pos is not None and (e.buttons() & Qt.MouseButton.LeftButton):
             delta = e.position() - self._press_pos
             if self._dragged or delta.manhattanLength() > 3:
+                if not self._dragged:
+                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
                 self._dragged = True
                 self._press_pos = e.position()
                 self._pan_pixels(delta.x(), delta.y())
@@ -380,15 +510,26 @@ class TileMap(QGraphicsView):
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton and self._press_pos is not None:
-            if not self._dragged:
-                lat, lon = self._scene_to_ll(self.mapToScene(e.position().toPoint()))
-                self.clicked.emit(lat, lon)
+            if self._dragged:
+                self.setCursor(Qt.CursorShape.CrossCursor)
+            else:
+                # stash the click; it only fires if no double-click follows
+                self._click_ll = self._scene_to_ll(self.mapToScene(e.position().toPoint()))
+                self._click_timer.start()
             self._press_pos = None
         super().mouseReleaseEvent(e)
 
+    def _emit_click(self):
+        if self._click_ll is not None:
+            lat, lon = self._click_ll
+            self._click_ll = None
+            self.clicked.emit(lat, lon)
+
     def mouseDoubleClickEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
-            self.zoom_at(1.0, e.position().toPoint())
+            self._click_timer.stop()      # it was a zoom, not a pin/waypoint
+            self._click_ll = None
+            self._animate_zoom_by(1.0, e.position().toPoint())
         e.accept()
 
     def resizeEvent(self, e):

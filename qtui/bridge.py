@@ -39,6 +39,7 @@ class DeviceBridge(QObject):
         self.device: core.Device | None = None
         self._connecting = False
         self._monitor_on = False
+        self._monitor_gen = 0   # invalidates old monitor threads across reconnects
 
     # ---- connect --------------------------------------------------------
 
@@ -121,19 +122,21 @@ class DeviceBridge(QObject):
     # ---- liveness monitor (notice an unplug) ----------------------------
 
     def _start_monitor(self):
-        if self._monitor_on:
-            return
+        # a new generation orphans any older monitor thread that is still inside
+        # its 3 s sleep (e.g. disconnect → reconnect within that window)
+        self._monitor_gen += 1
         self._monitor_on = True
-        threading.Thread(target=self._monitor_worker, daemon=True).start()
+        threading.Thread(target=self._monitor_worker, args=(self._monitor_gen,),
+                         daemon=True).start()
 
-    def _monitor_worker(self):
+    def _monitor_worker(self, gen: int):
         import time
         import core
         misses = 0
-        while self._monitor_on:
+        while self._monitor_on and gen == self._monitor_gen:
             time.sleep(3.0)
             dev = self.device
-            if dev is None or not self._monitor_on:
+            if dev is None or not self._monitor_on or gen != self._monitor_gen:
                 return
             if core.device_present(dev.serial):
                 misses = 0

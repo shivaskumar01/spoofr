@@ -12,7 +12,7 @@ import random
 import threading
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPushButton, QVBoxLayout, QWidget,
@@ -194,6 +194,7 @@ class MapPanel(QFrame):
         self._suggest_timer.timeout.connect(self._fire_suggest)
 
     def _wire(self):
+        self.search.installEventFilter(self)   # Esc dismisses the suggestions
         self.map.clicked.connect(self._on_click)
         self.bridge.located.connect(self._on_located)
         self.bridge.restored.connect(self.on_restored)
@@ -227,7 +228,16 @@ class MapPanel(QFrame):
 
     # ---- teleport: stage a pin, then commit -----------------------------
 
+    def eventFilter(self, obj, e):
+        if (obj is self.search and e.type() == QEvent.Type.KeyPress
+                and e.key() == Qt.Key.Key_Escape):
+            self._hide_suggestions()
+            self.search.clearFocus()
+            return True
+        return super().eventFilter(obj, e)
+
     def _on_click(self, lat: float, lon: float):
+        self._hide_suggestions()             # a map tap dismisses the dropdown
         if self.mode == "route":
             self._add_waypoint(lat, lon)
         else:
@@ -399,12 +409,19 @@ class MapPanel(QFrame):
         threading.Thread(target=self._walk_worker, daemon=True).start()
 
     def _walk_worker(self):
+        # Step by *measured* elapsed time, not the nominal tick: device.set()
+        # round-trips to the phone, so a fixed step per loop would walk slower
+        # than the chosen speed. Clamp so a stall never teleports you.
         dt = 0.18
+        last = time.monotonic()
         while self._walking and self.bridge.device is not None:
             vx, vy = self._walk_vec
-            if (vx or vy) and self._walk_pos:
+            now = time.monotonic()
+            step_t = min(now - last, 1.0)
+            last = now
+            if (vx or vy) and self._walk_pos and step_t > 0.01:
                 lat, lon = self._walk_pos
-                dist = max(self.speed, 0.3) * dt
+                dist = max(self.speed, 0.3) * step_t
                 lat += (vx * dist) / _M_PER_DEG
                 lon += (vy * dist) / (_M_PER_DEG * max(0.15, math.cos(math.radians(lat))))
                 self._walk_pos = (lat, lon)

@@ -64,6 +64,7 @@ class Sidebar(QFrame):
         self._anim = QPropertyAnimation(self, b"pos", self)
         self._anim.setDuration(190)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.finished.connect(self._after_slide)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -325,3 +326,7 @@ class Sidebar(QFrame):
         self._anim.setStartValue(self.pos())
         self._anim.setEndValue(QPoint(-WIDTH, self.y()))
         self._anim.start()
+
+    def _after_slide(self):
+        if not self._open:
+            self.hide()      # fully closed → stop compositing the off-screen panel
