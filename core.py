@@ -144,6 +144,12 @@ def cleanup() -> None:
     _tunneld.stop()
 
 
+def ensure_tunneld() -> None:
+    """Start (or attach to) the tunnel daemon now — used by the headless host to
+    pre-warm it at boot so the phone's first Connect doesn't pay the wait."""
+    _tunneld.ensure()
+
+
 def _port_open(host: str, port: int) -> bool:
     with socket.socket() as s:
         s.settimeout(0.5)

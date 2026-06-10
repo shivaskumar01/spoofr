@@ -1,23 +1,23 @@
 # Spoofr
 
-Set your iPhone's GPS to any point on a map and every iOS app sees the fake location — no jailbreak. Drive it from your Mac, or hand control to your phone's browser over Wi-Fi.
+Set your iPhone's GPS to any point on a map and every iOS app sees the fake location — no jailbreak. Drive it from your Mac, from your phone's browser, or from a headless always-on host.
 
 Works on **all iOS 17–26.x** — nothing is hardcoded to a version; it uses Apple's universal personalized developer image.
 
 ## How it works
 
-Spoofr is a Mac app (`gui.py`) with a **This Mac / iPhone** switch:
+Spoofr is a native Mac app (PySide6, `qtui/`) with a **This Mac / iPhone** switch:
 
-- **This Mac** — a dark map: click to drop a pin and set your location, or drop waypoints and "walk" a route.
-- **iPhone** — shows a QR code; scan it and control everything from your phone's browser (same Wi‑Fi), cable‑free. The Mac stays the host; the phone is the remote.
+- **This Mac** — a dark, GPU-smooth map: click to drop a pin and set your location, walk with the joystick/arrow keys, or drop waypoints and "walk" a route (optionally snapped to real roads).
+- **iPhone** — shows a QR code; scan it and control everything from your phone's browser (same Wi‑Fi). The Mac stays the host; the phone is the remote.
 
-Apple's location override is a host→device developer command, so a Mac is always in the loop — there's no jailbreak‑free way to run this standalone on the phone.
+Apple's location override is a host→device developer command, so a host is always in the loop — there's no jailbreak‑free way to run this standalone on the phone.
 
 ## One-time setup
 
 1. **Developer Mode** (Settings → Privacy & Security → Developer Mode → On — the phone reboots). Required for *any* no‑jailbreak location tool; can't be bypassed. The app detects when it's off and walks you through it, then auto‑connects.
 2. Plug into your Mac once, tap **Trust** and enter your PIN.
-3. **Tk 8.6 environment** — `tkintermapview` breaks on the Tcl/Tk 9.0 that uv's Python and current Homebrew ship (blank map + crash). Build with micromamba (prebuilt, no admin):
+3. **Python 3.11 venv** — build with micromamba (prebuilt, no admin):
 
    ```bash
    cd spoofr
@@ -26,7 +26,7 @@ Apple's location override is a host→device developer command, so a Mac is alwa
    .venv/bin/pip install -e ".[dev]"
    ```
 
-   Verify: `.venv/bin/python -c "import tkinter; print(tkinter.TkVersion)"` prints `8.6`.
+   (Tk 8.6 is only needed by the legacy Tk UI, `gui.py`; the main app is Qt.)
 
 4. **`ipsw` CLI** — pymobiledevice3 shells out to it to build the developer disk image (iOS 17+); without it, mounting hangs. Use the cask (prebuilt) and clear quarantine:
 
@@ -35,27 +35,56 @@ Apple's location override is a host→device developer command, so a Mac is alwa
    xattr -dr com.apple.quarantine /opt/homebrew/Caskroom/ipsw
    ```
 
-5. **Cable‑free (optional, one‑time)** — to use iPhone mode without the cable, open Spoofr → **⚡ Enable wireless** (or run `.venv/bin/pymobiledevice3 lockdown wifi-connections --state on`) once while plugged in. After that the phone is reachable over Wi‑Fi; unplug for good.
+## Going wireless
+
+The cable is only needed for the first minute of the app's life:
+
+1. With the cable in, open ☰ → **Settings** → **⚡ Go wireless (one-time)**.
+2. Unplug. Done — discovery, the tunnel, and spoofing all run over Wi‑Fi from then on (the phone just has to be on the same network).
+
+The status pill always shows how the phone is linked (`· USB`, `· Wi‑Fi`, or `· USB + Wi‑Fi`), and shows **Ready · iPhone on Wi‑Fi** before you even click Connect. If the connection drops — unplug, Wi‑Fi nap, roaming — Spoofr auto‑reconnects for up to two minutes and re‑asserts your spoofed location; the button reads **Reconnecting…** (click it to stop trying).
+
+### Experiments to try with the phone in hand
+
+- **Zero cable, ever:** `.venv/bin/python -m pymobiledevice3 remote pair` — iOS 17 wireless pairing (a prompt appears on the phone). If it works on your iOS version, even the first-time cable is unnecessary.
+- **No Wi‑Fi around (car, outdoors):** turn on the phone's Personal Hotspot, join it from the Mac — same-subnet discovery should work over it.
 
 ## Running it
 
 Open **Spoofr** (the app icon in Applications, or double‑click `Spoofr.app`). No sudo, no Terminal: it starts the Wi‑Fi tunnel itself, asking for your macOS password **once** — and only if the tunnel isn't already up.
 
-- **This Mac:** **Connect** → click the map → **Set location here**. Route mode drops numbered waypoints and walks them at a chosen speed. **Restore GPS** clears the spoof.
+- **This Mac:** **Connect** → click the map → **Set location here**. Route mode drops numbered waypoints and walks them at a chosen pace (Walk/Run/Cycle/Drive, loop/bounce, GPX import/export). **Restore GPS** clears the spoof. Panic hotkey: ⌃⌥⌘R restores real GPS from anywhere.
 - **iPhone:** click the **iPhone** tab → scan the QR with your Camera → control from Safari.
 
-The desktop basemap is set near the top of `gui.py` (`TILE_SERVER`); swap `lyrs=m` for `lyrs=s` for satellite.
+Dev run: `.venv/bin/python -m qtui`. The basemap URL is `DEFAULT_TILES` in `qtui/tilemap.py`.
+
+## Headless host (always-on, no desktop app)
+
+Make the Mac a permanent spoofing box — the phone's browser is the only UI, across reboots:
+
+```bash
+sudo .venv/bin/python host.py install   # launchd daemon: tunnel + server at boot
+.venv/bin/python host.py url            # stable URL + QR — scan once, bookmark it
+.venv/bin/python host.py status         # daemon / tunnel / phone health
+sudo .venv/bin/python host.py uninstall
+```
+
+The token is fixed at install time, so the bookmarked URL keeps working. Token-gated, LAN-only by design — don't port-forward it.
 
 ## Layout
 
 ```
-core.py        # pymobiledevice3 engine: tunnel, mount, set/clear/route
-gui.py         # the Spoofr desktop app (map + This Mac / iPhone switch)
+qtui/          # the native Qt app: app, mapview, tilemap, bridge, sidebar, …
+core.py        # pymobiledevice3 engine: tunnel, mount, set/clear/route, wireless
 portable.py    # iPhone mode: tunnel elevation, runs the phone server, makes the QR
 server.py      # stdlib HTTP control server for the phone
 web/           # the phone's web UI (MapLibre)
-launcher.py    # superseded standalone QR launcher (kept; the iPhone tab replaces it)
-Spoofr.app      # double-click bundle → runs gui.py
+host.py        # headless always-on host mode (launchd daemon)
+spoofr_app.py  # entry point for the packaged .app (PyInstaller)
+gui.py         # the legacy Tk app (kept; also hosts the --tunneld/--server helpers)
+launcher.py    # superseded standalone QR launcher
+Spoofr.app     # double-click bundle → runs the Qt app from this checkout
+dist/          # packaged, signed Spoofr.app (exact CoreLocation needs the bundle)
 tests/ · pyproject.toml
 ```
 
