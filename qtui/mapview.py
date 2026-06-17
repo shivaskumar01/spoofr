@@ -1,4 +1,4 @@
-"""MapPanel — the map card and everything that lives on it.
+"""MapPanel, the map card and everything that lives on it.
 
 Owns the TileMap plus the floating chrome (search + autocomplete, the
 'Set location here' button, the live coordinate readout, the zoom pill) and the
@@ -251,7 +251,7 @@ class MapPanel(QFrame):
         else:
             self.map.move_marker(self._pin_ov, lat, lon)
         self.set_btn.show(); self.set_btn.raise_()
-        self.hint.emit(f"Pinned {lat:.5f}, {lon:.5f} — tap “Set location here” to move your iPhone.")
+        self.hint.emit(f"Pinned {lat:.5f}, {lon:.5f}, tap “Set location here” to move your iPhone.")
 
     def _commit(self):
         if self.pending:
@@ -292,7 +292,7 @@ class MapPanel(QFrame):
         store.save(self.settings)
 
     def restore_active_spoof(self, lat: float, lon: float):
-        """On reconnect: the phone is still set to this spot — show it and re-apply
+        """On reconnect: the phone is still set to this spot, show it and re-apply
         so the app and device agree. Restore GPS then resets it."""
         self._active_spoof = (lat, lon)
         self._anchor = (lat, lon)
@@ -327,7 +327,7 @@ class MapPanel(QFrame):
         self.pending = None
         self.set_btn.hide()
         self._anchor = None              # nothing to jitter around once the spoof is cleared
-        self._active_spoof = None        # phone is back on real GPS — forget the saved spoof
+        self._active_spoof = None        # phone is back on real GPS, forget the saved spoof
         self.persist_spoof()
         self.bridge.locate()             # re-show the live marker at the current location
 
@@ -338,13 +338,13 @@ class MapPanel(QFrame):
         self._stage(lat, lon)             # stage it too, so one tap sets it
 
     def locate_me(self, lat: float, lon: float):
-        """Fly to the user's current location and show the 'You' marker —
+        """Fly to the user's current location and show the 'You' marker,
         informational only (no spoof, no jitter anchor). Street zoom: the packaged
-        app gets an exact CoreLocation fix; a plain dev run gets IP (city) — either
+        app gets an exact CoreLocation fix; a plain dev run gets IP (city), either
         way the user clicks/searches to set the iPhone."""
         self.map.set_view(lat, lon, 15)
         self._set_live(lat, lon)
-        self.hint.emit("Centered on your location — click anywhere or search, then “Set location here”.")
+        self.hint.emit("Centered on your location, click anywhere or search, then “Set location here”.")
 
     # ---- walk pad (joystick) + arrow keys -------------------------------
 
@@ -493,12 +493,12 @@ class MapPanel(QFrame):
         self.mode = mode
         if mode == "route":
             self.set_btn.hide()
-            self.hint.emit("Route — click your STARTING point first (usually where you are), "
+            self.hint.emit("Route, click your STARTING point first (usually where you are), "
                            "then your destination. Press Start to go.")
         else:
             if self.pending:
                 self.set_btn.show(); self.set_btn.raise_()
-            self.hint.emit("Teleport — click the map or search, then “Set location here”.")
+            self.hint.emit("Teleport, click the map or search, then “Set location here”.")
 
     def set_speed(self, mps: float):
         self.speed = float(mps)
@@ -524,7 +524,7 @@ class MapPanel(QFrame):
         self._wp_ovs.append(ov)
         self._redraw_path(self.points)
         if n == 1:
-            self.hint.emit("● Start set (green). Now click your destination — and any stops on the way.")
+            self.hint.emit("● Start set (green). Now click your destination, and any stops on the way.")
         else:
             self.hint.emit(f"{n} points · green = start. Add more stops, or press Start.")
 

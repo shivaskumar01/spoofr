@@ -1,4 +1,4 @@
-"""Spoofr — native PySide6 application shell.
+"""Spoofr, native PySide6 application shell.
 
 The window chrome (header, status pill, Connect/Restore, hint bar) wrapped around
 a MapPanel. Connect/Restore drive the device through a DeviceBridge on worker
@@ -220,28 +220,28 @@ class MainWindow(QWidget):
 
     def _disconnect(self):
         self.panel.persist_spoof()       # remember the set location for next time
-        self.bridge.disconnect()         # close session WITHOUT clearing — spoof stays on the phone
+        self.bridge.disconnect()         # close session WITHOUT clearing, spoof stays on the phone
         self.panel.clear_all()
         self.panel.show_walk_pad(False)
         self._set_connect_state("connect")
         self.set_status("Not connected", theme.GREY)
-        self.set_hint("Disconnected — your set location stays on the iPhone. "
+        self.set_hint("Disconnected, your set location stays on the iPhone. "
                       "Reconnect and Restore GPS to reset it.")
 
     def _on_device_lost(self):
-        # gone for good (reconnect gave up or was stopped) — spoof persists on the phone
+        # gone for good (reconnect gave up or was stopped), spoof persists on the phone
         self.panel.persist_spoof()
         self.panel.clear_all()
         self.panel.show_walk_pad(False)
         self._set_connect_state("connect")
         self.set_status("Disconnected", theme.GREY)
-        self.set_hint("Lost the iPhone — your set location stays on the phone. "
+        self.set_hint("Lost the iPhone, your set location stays on the phone. "
                       "Reconnect and Restore GPS to reset it.")
 
     def _on_reconnecting(self, attempt: int):
         self._set_connect_state("reconnecting")
         if attempt == 1:
-            self.set_hint("Connection dropped — reconnecting… your set location stays on "
+            self.set_hint("Connection dropped, reconnecting… your set location stays on "
                           "the iPhone. Click “Reconnecting…” to stop trying.")
 
     def _on_visible(self, kinds: str):
@@ -261,11 +261,11 @@ class MainWindow(QWidget):
         spoof = self.settings.get("active_spoof")
         if spoof:
             self.panel.restore_active_spoof(spoof["lat"], spoof["lon"])
-            self.set_hint("Your iPhone is still set to your last location — Restore GPS to reset, "
+            self.set_hint("Your iPhone is still set to your last location, Restore GPS to reset, "
                           "or pick a new spot.")
         else:
             self.bridge.locate()         # fly the map to the user's current location
-            self.set_hint("Connected — finding your location… drop a pin or search to move your iPhone.")
+            self.set_hint("Connected, finding your location… drop a pin or search to move your iPhone.")
         # remember + surface whether the cable is still required
         wireless_on = bool(getattr(device, "wireless_on", False))
         self.settings["wireless_on"] = wireless_on
@@ -344,15 +344,15 @@ class MainWindow(QWidget):
         if st and st.get("connected"):
             nm = st.get("name") or "iPhone"
             self.set_status(f"iPhone in control  ·  {nm}", theme.GREEN)
-            self.portable_view.set_status(f"●  {nm} connected — controlling from your phone", theme.GREEN)
+            self.portable_view.set_status(f"●  {nm} connected, controlling from your phone", theme.GREEN)
         else:
             self.set_status("Waiting for your phone…", theme.AMBER)
-            self.portable_view.set_status("●  Waiting for your phone — scan the QR", theme.AMBER)
+            self.portable_view.set_status("●  Waiting for your phone, scan the QR", theme.AMBER)
 
     def _on_portable_failed(self, msg: str):
         self.portable_view.set_status(f"⚠  {msg}", theme.RED)
         self.set_status("Portable mode failed", theme.RED)
-        self.set_hint("Couldn’t start portable mode — switch back to This Mac and try again.")
+        self.set_hint("Couldn’t start portable mode, switch back to This Mac and try again.")
 
     def _copy_portable_link(self):
         url = self.portable.url()

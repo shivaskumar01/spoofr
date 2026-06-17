@@ -2,7 +2,7 @@
 
 - make_pin / make_waypoint return crisp @2x QPixmaps for the staged pin + waypoints.
 - PulseMarker is a live QGraphicsObject whose ring expands/fades via a
-  QPropertyAnimation — a genuinely smooth 60fps pulse, not a frame cycle.
+  QPropertyAnimation, a genuinely smooth 60fps pulse, not a frame cycle.
 """
 
 from __future__ import annotations

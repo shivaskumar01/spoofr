@@ -1,4 +1,4 @@
-"""Route math, snap-to-roads, and GPX — pure, no device stack.
+"""Route math, snap-to-roads, and GPX, pure, no device stack.
 
 Interpolation between waypoints, OSRM road-snapping, and GPX read/write. Kept
 out of core.py so route editing / GPX import never pulls in pymobiledevice3.

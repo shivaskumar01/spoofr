@@ -1,4 +1,4 @@
-"""Address search / geocoding — pure HTTP, no device stack.
+"""Address search / geocoding, pure HTTP, no device stack.
 
 Kept separate from core.py so the search box never pulls in pymobiledevice3.
 Mirrors core's behaviour: Photon autocomplete, ArcGIS→OSM geocoding, and a
@@ -62,19 +62,19 @@ def geocode(query: str) -> tuple[float, float]:
 def current_location(timeout: float = 8.0):
     """Where is this Mac (the phone is right next to it)?
 
-    Precise via macOS CoreLocation when Spoofr runs as the signed .app bundle — one
+    Precise via macOS CoreLocation when Spoofr runs as the signed .app bundle, one
     native 'Allow' prompt, then ~Wi-Fi accuracy. In a plain `python -m qtui` run,
     CoreLocation is silently denied by macOS, so that path is skipped instantly and
     IP geolocation (ip-api → ipinfo, city-level) carries it with zero setup. iOS
     exposes no way to read the phone's own GPS over the dev tunnel.
 
-    Returns (lat, lon) or None. Blocking — call from a worker thread.
+    Returns (lat, lon) or None. Blocking, call from a worker thread.
     """
     return _mac_location(timeout) or _ip_location()
 
 
 def _mac_location(timeout: float):
-    """Precise CoreLocation fix — only attempted in the bundle (where it can work)."""
+    """Precise CoreLocation fix, only attempted in the bundle (where it can work)."""
     import sys
     if not getattr(sys, "frozen", False):   # script run: macOS denies it → don't stall
         return None

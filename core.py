@@ -1,4 +1,4 @@
-"""Spoofr — device control, the privileged tunnel, route math.
+"""Spoofr, device control, the privileged tunnel, route math.
 
 pymobiledevice3 9.x is fully async; Tkinter is sync. Every coroutine runs on one
 persistent background loop and the caller blocks until it finishes, so the GUI
@@ -69,7 +69,7 @@ class SpooferError(RuntimeError):
 
 
 class DeveloperModeRequired(SpooferError):
-    """Developer Mode is off on the iPhone — the GUI should run the enable wizard
+    """Developer Mode is off on the iPhone, the GUI should run the enable wizard
     rather than show a plain error."""
 
 
@@ -93,7 +93,7 @@ _loop = _Loop()
 # --- the privileged tunnel daemon ---------------------------------------
 
 class _Tunneld:
-    """Owns `pymobiledevice3 remote tunneld` — the root process that builds the
+    """Owns `pymobiledevice3 remote tunneld`, the root process that builds the
     network tunnel to the iPhone.
 
     If a tunneld is already listening we attach to it and leave it be. Otherwise
@@ -106,7 +106,7 @@ class _Tunneld:
 
     def ensure(self) -> None:
         if _port_open(*TUNNELD_DEFAULT_ADDRESS):
-            return  # already up — reuse it, don't take over its lifecycle
+            return  # already up, reuse it, don't take over its lifecycle
         if os.geteuid() != 0:
             raise SpooferError(
                 "The tunnel to your iPhone needs root. Relaunch the app with sudo:\n"
@@ -145,7 +145,7 @@ def cleanup() -> None:
 
 
 def ensure_tunneld() -> None:
-    """Start (or attach to) the tunnel daemon now — used by the headless host to
+    """Start (or attach to) the tunnel daemon now, used by the headless host to
     pre-warm it at boot so the phone's first Connect doesn't pay the wait."""
     _tunneld.ensure()
 
@@ -181,7 +181,7 @@ def _log(msg: str, exc: bool = False) -> None:
 def geocode(query: str) -> tuple[float, float]:
     """Look up an address or city → (lat, lon). Raises SpooferError if not found.
 
-    ArcGIS first (works without a key); OpenStreetMap as a fallback. Blocking —
+    ArcGIS first (works without a key); OpenStreetMap as a fallback. Blocking,
     call from a worker thread.
     """
     import geocoder
@@ -197,7 +197,7 @@ def geocode(query: str) -> tuple[float, float]:
 
 def suggest(query: str, limit: int = 6) -> list[dict]:
     """Autocomplete a place/address/city → up to ``limit`` candidates, each a dict
-    {label, secondary, lat, lon}. Uses Photon (free, no key). Blocking — call from a
+    {label, secondary, lat, lon}. Uses Photon (free, no key). Blocking, call from a
     worker thread. Returns [] on any error."""
     import requests
     try:
@@ -227,7 +227,7 @@ def suggest(query: str, limit: int = 6) -> list[dict]:
 def my_location() -> Optional[tuple[float, float]]:
     """Approximate current location from this Mac's public IP (city-level).
 
-    Returns None if it can't be determined. Blocking — call from a worker thread.
+    Returns None if it can't be determined. Blocking, call from a worker thread.
     """
     import geocoder
     try:
@@ -251,7 +251,7 @@ class Device:
     _loc_stack: AsyncExitStack     # owns the current DVT + LocationSimulation (rebuildable)
     serial: str = ""               # usbmux serial, for liveness checks
     link: str = "USB"              # how the phone is visible: "USB" / "Wi-Fi" / "USB + Wi-Fi"
-    wireless_on: bool = False      # EnableWifiConnections — cable-free control available
+    wireless_on: bool = False      # EnableWifiConnections, cable-free control available
     _lock: "threading.Lock" = field(default_factory=threading.Lock)
 
     def set(self, lat: float, lon: float) -> None:
@@ -314,7 +314,7 @@ class Device:
 
         With `bounce` the path is walked forward then back; with `loop` (or
         `bounce`) it repeats until `stop` is set, otherwise it returns at the
-        end. Call from a worker thread — it sleeps between fixes.
+        end. Call from a worker thread, it sleeps between fixes.
         """
         path = route_points(points, speed_mps, dt)
         if not path:
@@ -337,7 +337,7 @@ class Device:
     def close(self, clear: bool = True) -> None:
         """Tear down the DVT/location session + tunnel. With clear=False the
         simulated location is LEFT ACTIVE on the iPhone (it persists until the user
-        resets it or the device reboots) — used when disconnecting on purpose."""
+        resets it or the device reboots), used when disconnecting on purpose."""
         async def shutdown():
             if clear:
                 try:
@@ -371,7 +371,7 @@ def connect(on_status: Optional[StatusFn] = None) -> Device:
 
 def device_present(serial: str) -> bool:
     """True if the iPhone with this usbmux serial is still connected (USB/Wi-Fi).
-    Used to notice an unplug. Blocking — call from a worker thread."""
+    Used to notice an unplug. Blocking, call from a worker thread."""
     if not serial:
         return True
     try:
@@ -384,7 +384,7 @@ async def _device_present(serial: str) -> bool:
     try:
         devices = await list_devices()
     except Exception:
-        return True      # transient usbmux hiccup — don't declare a disconnect
+        return True      # transient usbmux hiccup, don't declare a disconnect
     return any(getattr(d, "serial", None) == serial for d in devices)
 
 
@@ -399,7 +399,7 @@ def _kinds_to_link(kinds: set[str]) -> str:
 def link_status(serial: str) -> Optional[str]:
     """How this iPhone is visible right now: "USB" / "Wi-Fi" / "USB + Wi-Fi",
     "" if it's definitively gone, or None on a transient usbmux hiccup (treat as
-    no-information, not a disconnect). Blocking — call from a worker thread."""
+    no-information, not a disconnect). Blocking, call from a worker thread."""
     if not serial:
         return None
     try:
@@ -418,8 +418,8 @@ async def _link_status(serial: str) -> Optional[str]:
 
 
 def visible_kinds() -> str:
-    """How *any* iPhone is visible right now ("" if none) — the idle pre-flight
-    that lights up Connect before the user clicks. Blocking — worker thread."""
+    """How *any* iPhone is visible right now ("" if none), the idle pre-flight
+    that lights up Connect before the user clicks. Blocking, worker thread."""
     try:
         return _loop.run(_visible_kinds())
     except Exception:
@@ -457,7 +457,7 @@ async def _enable_wireless():
         await asyncio.wait_for(lockdown.set_enable_wifi_connections(True), 15)
         on = bool(await asyncio.wait_for(lockdown.get_enable_wifi_connections(), 15))
         if not on:
-            raise SpooferError("The iPhone didn’t confirm the switch — unlock it and try again.")
+            raise SpooferError("The iPhone didn’t confirm the switch, unlock it and try again.")
     except asyncio.TimeoutError:
         raise SpooferError("The iPhone didn’t respond. Unlock it and try again.") from None
     finally:
@@ -468,7 +468,7 @@ async def _enable_wireless():
 
 
 def developer_mode_status() -> Optional[bool]:
-    """True/False if an iPhone is connected, else None. Over USB — no root/tunnel."""
+    """True/False if an iPhone is connected, else None. Over USB, no root/tunnel."""
     return _loop.run(_dev_mode_status())
 
 
@@ -521,7 +521,7 @@ async def _open(say: StatusFn) -> Device:
         raise SpooferError("No iPhone reachable. Plug it in and tap “Trust”, or go "
                            "cable-free: menu ▸ Settings ▸ “Go wireless” (one-time, with "
                            "the cable in), then stay on the same Wi-Fi.")
-    # prefer the cable when both links exist — faster and steadier for the
+    # prefer the cable when both links exist, faster and steadier for the
     # lockdown/mount phase; Wi-Fi-only devices still work
     muxed.sort(key=lambda d: d.connection_type != "USB")
     serial = muxed[0].serial
@@ -687,7 +687,7 @@ def jitter(lat: float, lon: float, radius_m: float = 4.0) -> tuple[float, float]
 def snap_to_roads(points, profile: str = "driving", timeout: float = 8.0):
     """Replace the straight segments between waypoints with the real road
     geometry (OSRM public server). Returns the densified [(lat,lon),…]; on any
-    failure returns `points` unchanged so routing still works. Blocking — call
+    failure returns `points` unchanged so routing still works. Blocking, call
     from a worker thread."""
     pts = [tuple(p) for p in points]
     if len(pts) < 2:

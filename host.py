@@ -1,8 +1,8 @@
-"""Spoofr — headless host mode: the Mac as an always-on spoofing box.
+"""Spoofr, headless host mode: the Mac as an always-on spoofing box.
 
 Runs the tunnel + the phone-control server (server.py) as a boot service, so the
 desktop app never needs to be open: scan the QR once, bookmark the URL on your
-iPhone, and the phone is the whole UI from then on — across reboots.
+iPhone, and the phone is the whole UI from then on, across reboots.
 
     sudo .venv/bin/python host.py install     # one-time: launchd daemon at boot
     .venv/bin/python host.py url              # the stable URL + QR to scan
@@ -11,7 +11,7 @@ iPhone, and the phone is the whole UI from then on — across reboots.
     .venv/bin/python host.py run [port]       # foreground (what the daemon runs)
 
 The token is generated once at install and stored in the LaunchDaemon plist, so
-the URL — http://<this-mac>.local:8765/?t=<token> — never changes. The server is
+the URL, http://<this-mac>.local:8765/?t=<token>, never changes. The server is
 token-gated and LAN-only by design; don't port-forward it to the internet.
 """
 
@@ -142,10 +142,10 @@ def cmd_run(port: int) -> None:
             print("Tunnel up.", flush=True)
         except Exception as e:
             # KeepAlive will relaunch us; meanwhile the server can still answer
-            print(f"Tunnel didn’t start ({e}); serving anyway — first Connect will retry.",
+            print(f"Tunnel didn’t start ({e}); serving anyway, first Connect will retry.",
                   flush=True)
     elif not _port_open(TUNNELD_PORT):
-        print("Note: not root and no tunnel on :49151 — the phone’s Connect will fail\n"
+        print("Note: not root and no tunnel on :49151, the phone’s Connect will fail\n"
               "until the tunnel is up (install the daemon, or start the desktop app once).",
               flush=True)
 
@@ -170,7 +170,7 @@ def cmd_install(port: int) -> None:
     r = _launchctl("bootstrap", "system", str(PLIST))
     if r.returncode != 0:
         sys.exit(f"launchctl bootstrap failed: {(r.stderr or r.stdout).strip()}")
-    print(f"Installed — Spoofr now hosts at boot (log: {LOG}).")
+    print(f"Installed, Spoofr now hosts at boot (log: {LOG}).")
     _print_access(port, token)
 
 
@@ -181,7 +181,7 @@ def cmd_uninstall() -> None:
         PLIST.unlink()
     except FileNotFoundError:
         pass
-    print("Uninstalled — Spoofr no longer runs at boot.")
+    print("Uninstalled, Spoofr no longer runs at boot.")
 
 
 def cmd_status() -> None:
@@ -211,7 +211,7 @@ def cmd_status() -> None:
 def cmd_url() -> None:
     info = _read_plist()
     if not info:
-        sys.exit("Not installed — run:  sudo .venv/bin/python host.py install")
+        sys.exit("Not installed, run:  sudo .venv/bin/python host.py install")
     token, port = info
     _print_access(port, token)
 

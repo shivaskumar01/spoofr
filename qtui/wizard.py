@@ -3,7 +3,7 @@
 Apple requires Developer Mode to set a device's location. When core.connect()
 raises DeveloperModeRequired, the window opens this dialog: it surfaces the
 (hidden) toggle on the phone, shows the steps, and polls until the user turns it
-on — then auto-accepts so the caller reconnects.
+on, then auto-accepts so the caller reconnects.
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ class DevModeWizard(QDialog):
 
     def _on_ready(self):
         self._polling = False
-        self._status.setText("✓  Developer Mode on — connecting…")
+        self._status.setText("✓  Developer Mode on, connecting…")
         self._status.setStyleSheet(f"color: {theme.GREEN};")
         QTimer.singleShot(900, self.accept)
 

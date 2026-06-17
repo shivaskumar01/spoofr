@@ -1,4 +1,4 @@
-"""Spoofr — an iPhone location spoofer (dark customtkinter desktop app).
+"""Spoofr, an iPhone location spoofer (dark customtkinter desktop app).
 
 Open it from the Spoofr icon (or `.venv/bin/python gui.py`). It drives
 your iPhone over a Wi-Fi tunnel; the first time the tunnel is needed it asks for
@@ -48,7 +48,7 @@ try:
 except Exception:
     _PINCH_OK = False
 
-# Dark, labelled basemap (CARTO dark_all) — matches the app and never flashes white.
+# Dark, labelled basemap (CARTO dark_all), matches the app and never flashes white.
 TILE_SERVER = "https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"
 
 # --- palette: near-black canvas · deep-blue surfaces · crisp blue accent -
@@ -75,7 +75,7 @@ PAN_SPEED = 12   # map pixels moved per two-finger-scroll delta unit
 ctk.set_appearance_mode("dark")
 
 # Recolor the basemap to the project's black+blue by duotone-ing each tile. Contained
-# to tkintermapview's tile loader — we shim the PhotoImage *name* in its module only;
+# to tkintermapview's tile loader, we shim the PhotoImage *name* in its module only;
 # our markers create PIL.ImageTk images directly and are untouched.
 _DUO_PRESETS = {
     "Dim":    dict(black=(9, 12, 20),  mid=(28, 56, 112),  white=(96, 142, 214)),
@@ -121,7 +121,7 @@ _tkmw.ImageTk = _TileImageShim
 
 
 def _draw_pin(fill, size=(40, 52)):
-    """A polished teardrop pin — soft vertical gradient + white core, tip at bottom."""
+    """A polished teardrop pin, soft vertical gradient + white core, tip at bottom."""
     ss = 4
     w, h = size[0] * ss, size[1] * ss
     cx, r = w / 2, w * 0.38
@@ -147,7 +147,7 @@ def _draw_pin(fill, size=(40, 52)):
 
 
 def _draw_pulse_frame(phase, core=(34, 211, 238), size=46):
-    """One frame of a pulsing location dot — expanding/fading ring behind a steady
+    """One frame of a pulsing location dot, expanding/fading ring behind a steady
     white-ringed core. phase in [0,1)."""
     ss = 4
     s = size * ss
@@ -168,7 +168,7 @@ def _draw_pulse_frame(phase, core=(34, 211, 238), size=46):
 
 
 def _draw_dot(core, size=26, glow=True):
-    """A location dot — filled core + white ring, optional soft glow. Centered."""
+    """A location dot, filled core + white ring, optional soft glow. Centered."""
     ss = 4
     s = size * ss
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
@@ -227,7 +227,7 @@ class App(ctk.CTk):
         self._sections = {}
         self.saved = self.settings.get("saved", [])      # [{name,lat,lon}] favorites
         self.recent = self.settings.get("recent", [])    # [{lat,lon}] most-recent first
-        self._live_pos = None         # current spoofed (lat,lon) — where the You dot is
+        self._live_pos = None         # current spoofed (lat,lon), where the You dot is
         self._walk_vec = (0.0, 0.0)   # (north, east) unit vector; non-zero while walking
         self._walk_pos = None         # position the joystick walks from
         self._walking = False         # walk worker running
@@ -350,7 +350,7 @@ class App(ctk.CTk):
         self.map = tkintermapview.TkinterMapView(self.wrap, corner_radius=12)
         self.map.pack(fill="both", expand=True, padx=3, pady=3)
         self.map.set_tile_server(TILE_SERVER, max_zoom=20)
-        # Start over a random familiar city until the phone connects — never mid-ocean.
+        # Start over a random familiar city until the phone connects, never mid-ocean.
         _start = random.choice([
             (47.6062, -122.3321),   # Seattle
             (37.7749, -122.4194),   # San Francisco
@@ -386,7 +386,7 @@ class App(ctk.CTk):
             _b.draw = lambda *a, **k: None
         self.map.canvas.delete("button")
 
-        # Search — a floating pill, top-center (clear of the zoom control).
+        # Search, a floating pill, top-center (clear of the zoom control).
         self.search_bar = ctk.CTkFrame(self.map, fg_color=PANEL, corner_radius=14,
                                        border_width=1, border_color=BORDER, bg_color=MAP_BG)
         self.search_bar.place(relx=0.5, y=16, anchor="n")
@@ -399,17 +399,17 @@ class App(ctk.CTk):
         self.search_entry.bind("<Escape>", lambda e: self._hide_suggestions())
         self.search_entry.bind("<FocusOut>", lambda e: self.after(180, self._hide_suggestions))
         self._btn(self.search_bar, "Go", self._on_search, "primary", width=52, height=30).pack(side="left", padx=(0, 6))
-        # autocomplete dropdown — placed just below the bar when there are matches
+        # autocomplete dropdown, placed just below the bar when there are matches
         self.search_box = ctk.CTkFrame(self.map, fg_color=ELEV, corner_radius=12,
                                        border_width=1, border_color=BORDER, bg_color=MAP_BG)
 
-        # Commit button — floated bottom-center, shown only once a pin is staged.
+        # Commit button, floated bottom-center, shown only once a pin is staged.
         self.set_btn = ctk.CTkButton(self.map, text="Set location here", command=self._commit,
                                      width=224, height=48, corner_radius=24, text_color="#ffffff",
                                      fg_color=BLUE, hover_color=BLUE_HI, bg_color=MAP_BG,
                                      font=ctk.CTkFont(size=15, weight="bold"))
 
-        # Zoom control — one rounded pill (＋ / －), bottom-right.
+        # Zoom control, one rounded pill (＋ / －), bottom-right.
         zoom = ctk.CTkFrame(self.map, fg_color=PANEL, corner_radius=12,
                             border_width=1, border_color=BORDER, bg_color=MAP_BG)
         zoom.place(relx=1.0, rely=1.0, x=-16, y=-16, anchor="se")
@@ -422,11 +422,11 @@ class App(ctk.CTk):
                       hover_color=GHOST, text_color=TEXT, font=zfont,
                       command=lambda: self._zoom_at(-1)).pack(padx=3, pady=(0, 3))
 
-        # Live coordinate readout — top-left, mono.
+        # Live coordinate readout, top-left, mono.
         self.coord_readout = ctk.CTkLabel(self.map, text="", text_color=LIVE_HI,
                                           font=ctk.CTkFont(family="Menlo", size=11),
                                           fg_color=PANEL, corner_radius=8, bg_color=MAP_BG)
-        # Joystick / walk pad — bottom-left, shown only while connected.
+        # Joystick / walk pad, bottom-left, shown only while connected.
         self._build_walk_pad()
         for _k in ("Up", "Down", "Left", "Right"):   # arrow keys walk too (guarded vs. typing)
             self.bind(f"<KeyPress-{_k}>", self._key_walk_press)
@@ -442,7 +442,7 @@ class App(ctk.CTk):
 
         self._on_speed(1.4)
         self._on_mode("Teleport")
-        self._set_hint("Click the map or search a place — then Connect your iPhone.")
+        self._set_hint("Click the map or search a place, then Connect your iPhone.")
 
     def _on_mode(self, value: str) -> None:
         self.mode = value.lower()
@@ -481,7 +481,7 @@ class App(ctk.CTk):
     # ---- app mode: This Mac (desktop map) ↔ iPhone (portable QR) --------
 
     def _build_portable_view(self) -> None:
-        """The 'iPhone' mode view — a centered card with the QR + live status.
+        """The 'iPhone' mode view, a centered card with the QR + live status.
         Built once, hidden until the user switches to iPhone mode."""
         self.portable_view = ctk.CTkFrame(self, fg_color=BG, corner_radius=0)
         card = ctk.CTkFrame(self.portable_view, fg_color=PANEL, corner_radius=18,
@@ -564,7 +564,7 @@ class App(ctk.CTk):
         while self._portable_poll:                # poll the server for live phone status
             if not self.portable.alive():
                 self._post(lambda: self.portable_status_label.configure(
-                    text="⚠  Phone server stopped — switch to This Mac and back to retry.",
+                    text="⚠  Phone server stopped, switch to This Mac and back to retry.",
                     text_color=RED))
                 return
             st = self.portable.status()
@@ -590,17 +590,17 @@ class App(ctk.CTk):
             self.status.configure(text=f"iPhone in control · {nm}")
             self.dot.configure(text_color=GREEN)
             self.portable_status_label.configure(
-                text=f"●  {nm} connected — controlling from your phone", text_color=GREEN)
+                text=f"●  {nm} connected, controlling from your phone", text_color=GREEN)
         else:
             self.status.configure(text="Waiting for your phone…")
             self.dot.configure(text_color=AMBER)
             self.portable_status_label.configure(
-                text="●  Waiting for your phone — scan the QR", text_color=AMBER)
+                text="●  Waiting for your phone, scan the QR", text_color=AMBER)
 
     def _portable_failed(self, msg: str) -> None:
         self.portable_status_label.configure(text=f"⚠  {msg}", text_color=RED)
         self._set_status("Portable mode failed", RED)
-        self._set_hint("Couldn’t start portable mode — switch back to This Mac and try again.")
+        self._set_hint("Couldn’t start portable mode, switch back to This Mac and try again.")
 
     def _copy_portable_link(self) -> None:
         if not self.portable.url:
@@ -691,10 +691,10 @@ class App(ctk.CTk):
         ctk.CTkLabel(f, text="Each step ticks off as you do it.", font=self.f_hint,
                      text_color=MUTED, anchor="w", justify="left", wraplength=272).pack(fill="x", pady=(0, 12))
         self._guide_rows = []
-        for txt in ("Connect your iPhone — tap Connect (top right).",
-                    "Pick a spot — search above, or click the map.",
+        for txt in ("Connect your iPhone, tap Connect (top right).",
+                    "Pick a spot, search above, or click the map.",
                     "Press “Set location here” to move your iPhone.",
-                    "Optional — tap the “iPhone” tab to control from your phone."):
+                    "Optional, tap the “iPhone” tab to control from your phone."):
             row = ctk.CTkFrame(f, fg_color="transparent")
             row.pack(fill="x", pady=5)
             icon = ctk.CTkLabel(row, text="○", font=ctk.CTkFont(size=16), text_color=MUTED, width=22)
@@ -717,7 +717,7 @@ class App(ctk.CTk):
                 self._guide_portable]
         for (icon, _lbl), ok in zip(self._guide_rows, done):
             icon.configure(text="✓" if ok else "○", text_color=GREEN if ok else MUTED)
-        self._guide_done.configure(text="✓  Nice — you’ve got the hang of it!" if all(done[:3]) else "")
+        self._guide_done.configure(text="✓  Nice, you’ve got the hang of it!" if all(done[:3]) else "")
 
     # -- Settings --
 
@@ -785,12 +785,12 @@ class App(ctk.CTk):
         self._sections["about"] = f
         ctk.CTkLabel(f, text="About Spoofr", font=self.f_title, text_color=TEXT,
                      anchor="w").pack(fill="x", pady=(2, 8))
-        text = ("Spoofr sets your iPhone’s GPS to anywhere on the map — every app on your "
+        text = ("Spoofr sets your iPhone’s GPS to anywhere on the map, every app on your "
                 "phone then sees that location. No jailbreak.\n\n"
-                "•  This Mac — drive it from this map.\n"
-                "•  iPhone — scan a QR and control it from your phone over Wi-Fi.\n\n"
+                "•  This Mac, drive it from this map.\n"
+                "•  iPhone, scan a QR and control it from your phone over Wi-Fi.\n\n"
                 "Spoofing is fine for development, privacy and games. Using it to defraud "
-                "or to defeat court-ordered monitoring can be illegal — how you use it is "
+                "or to defeat court-ordered monitoring can be illegal, how you use it is "
                 "on you.")
         ctk.CTkLabel(f, text=text, font=self.f_body, text_color=MUTED, anchor="w",
                      justify="left", wraplength=276).pack(fill="x")
@@ -1034,7 +1034,7 @@ class App(ctk.CTk):
     def _key_walk_press(self, e) -> None:
         foc = self.focus_get()
         if foc is not None and foc.winfo_class() in ("Entry", "TEntry"):
-            return                                                       # typing — let arrows edit text
+            return                                                       # typing, let arrows edit text
         k = e.keysym
         aid = self._key_release_after.pop(k, None)
         if aid:
@@ -1191,7 +1191,7 @@ class App(ctk.CTk):
             pass
 
     def _on_pinch(self, delta: float) -> None:
-        """Native pinch callback — fires in a Cocoa gesture context with no valid
+        """Native pinch callback, fires in a Cocoa gesture context with no valid
         Python/Tk thread state, so it must NOT touch Tk (that aborts the process).
         Only accumulate; _drain applies the zoom on the Tk main loop."""
         self._pinch_accum += delta
@@ -1210,7 +1210,7 @@ class App(ctk.CTk):
             self.map.set_zoom(self.map.zoom + step, relative_pointer_x=x / w, relative_pointer_y=y / h)
 
     def _pan(self, dx: float, dy: float) -> None:
-        """Shift the visible map by (dx, dy) pixels — same math as drag-panning."""
+        """Shift the visible map by (dx, dy) pixels, same math as drag-panning."""
         m = self.map
         tx = m.lower_right_tile_pos[0] - m.upper_left_tile_pos[0]
         ty = m.lower_right_tile_pos[1] - m.upper_left_tile_pos[1]
@@ -1271,7 +1271,7 @@ class App(ctk.CTk):
             device = core.connect(on_status=lambda m: self._set_status(m, AMBER))
             self.device = device
             self._set_status(f"Connected  ·  {device.name}  ·  iOS {device.ios}", GREEN)
-            self._set_hint("Connected — drop a pin, paste coords, or use the ◉ walk pad (bottom-left).")
+            self._set_hint("Connected, drop a pin, paste coords, or use the ◉ walk pad (bottom-left).")
             self._post(self._update_guide)
             self._post(lambda: self._show_walk_pad(True))
         except core.DeveloperModeRequired:
@@ -1318,11 +1318,11 @@ class App(ctk.CTk):
                 pass
 
     def restore_real_gps(self) -> None:
-        """Panic / menu-bar restore — clear the spoof now, no dialog."""
+        """Panic / menu-bar restore, clear the spoof now, no dialog."""
         self.stop.set()
         self._walking = False
         if not self.device:
-            self._set_hint("Not connected — nothing to restore.")
+            self._set_hint("Not connected, nothing to restore.")
             return
 
         def work():
@@ -1398,7 +1398,7 @@ class App(ctk.CTk):
     def _dev_mode_ready(self) -> None:
         self._wizard_polling = False
         if self._wizard is not None and self._wizard.winfo_exists():
-            self._wizard_status.configure(text="✓  Developer Mode on — connecting…", text_color=GREEN)
+            self._wizard_status.configure(text="✓  Developer Mode on, connecting…", text_color=GREEN)
         self.after(900, self._finish_wizard_and_connect)
 
     def _finish_wizard_and_connect(self) -> None:
@@ -1425,13 +1425,13 @@ class App(ctk.CTk):
             self._add_point(lat, lon)
 
     def _stage(self, lat: float, lon: float) -> None:
-        """Place/move the pin without touching the phone — just a candidate."""
+        """Place/move the pin without touching the phone, just a candidate."""
         self.pending = (lat, lon)
         self._guide_picked = True
         self._mark_location(lat, lon)
         self._update_set_btn()
         self._update_guide()
-        self._set_hint(f"Pinned {lat:.5f}, {lon:.5f} — tap “Set location here” to move your iPhone.")
+        self._set_hint(f"Pinned {lat:.5f}, {lon:.5f}, tap “Set location here” to move your iPhone.")
 
     def _commit(self) -> None:
         if not self.pending or not self._need_device():
@@ -1580,7 +1580,7 @@ class App(ctk.CTk):
         self._update_set_btn()
 
     def _clear_live(self) -> None:
-        """Hide the live 'You' dot + readout — the phone's position is only known after a set."""
+        """Hide the live 'You' dot + readout, the phone's position is only known after a set."""
         if self.live_marker is not None:
             self.live_marker.delete()
             self.live_marker = None
@@ -1588,7 +1588,7 @@ class App(ctk.CTk):
         self.coord_readout.place_forget()
 
     def _set_live(self, lat: float, lon: float) -> None:
-        """Move the live (current) location marker — where the iPhone is now."""
+        """Move the live (current) location marker, where the iPhone is now."""
         self._live_pos = (lat, lon)
         self._set_readout(lat, lon)
         if self.live_marker is None:
@@ -1619,7 +1619,7 @@ class App(ctk.CTk):
         self._update_guide()
 
     def _on_restored(self) -> None:
-        """Spoof cleared → the phone is back on its real GPS, which we can't read — hide the dot."""
+        """Spoof cleared → the phone is back on its real GPS, which we can't read, hide the dot."""
         self._clear_location_marker()
         self._clear_live()
         self._anchor = None            # nothing to wobble once the spoof is cleared

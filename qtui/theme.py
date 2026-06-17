@@ -127,7 +127,7 @@ def apply_theme(app: QApplication) -> None:
     pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
     pal.setColor(QPalette.ColorRole.ToolTipBase, QColor(ELEV))
     pal.setColor(QPalette.ColorRole.ToolTipText, QColor(TEXT))
-    # Qt has no ::placeholder CSS — the palette role is the real mechanism
+    # Qt has no ::placeholder CSS, the palette role is the real mechanism
     pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(FAINT))
     app.setPalette(pal)
     app.setFont(ui_font(13))

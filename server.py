@@ -1,4 +1,4 @@
-"""Spoofr — Wi-Fi control server (drive it from your phone).
+"""Spoofr, Wi-Fi control server (drive it from your phone).
 
 Run on the Mac (the host) with sudo so it can build the tunnel:
     sudo .venv/bin/python server.py
@@ -6,7 +6,7 @@ Run on the Mac (the host) with sudo so it can build the tunnel:
 It prints a URL like http://192.168.x.x:8765/?t=<token>. Open that in Safari on
 your iPhone (same Wi-Fi) and the phone becomes the full control surface. The Mac
 talks to the iPhone over Wi-Fi via pymobiledevice3 (see core.py); the phone talks
-to the Mac over HTTP. Stdlib only — no web framework, live updates via polling.
+to the Mac over HTTP. Stdlib only, no web framework, live updates via polling.
 """
 
 from __future__ import annotations
@@ -227,7 +227,7 @@ def _lan_ip() -> str:
 def main() -> None:
     ip = _lan_ip()
     url = f"http://{ip}:{PORT}/?t={TOKEN}"
-    print("\n  Spoofr — open this in Safari on your iPhone")
+    print("\n  Spoofr, open this in Safari on your iPhone")
     print("  (same Wi-Fi as this Mac):\n", flush=True)
     print(f"      {url}\n", flush=True)
     print(f"  (also reachable locally at http://127.0.0.1:{PORT}/?t={TOKEN} )\n", flush=True)
@@ -235,7 +235,7 @@ def main() -> None:
         ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
     except OSError as e:
         print(f"  Could not bind port {PORT}: {e}", flush=True)
-        print(f"  Something else is using it — try another port:  server.py {PORT + 1}\n", flush=True)
+        print(f"  Something else is using it, try another port:  server.py {PORT + 1}\n", flush=True)
 
 
 if __name__ == "__main__":

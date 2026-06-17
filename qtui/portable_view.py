@@ -1,4 +1,4 @@
-"""iPhone (portable) mode — hand control to the phone over Wi-Fi.
+"""iPhone (portable) mode, hand control to the phone over Wi-Fi.
 
 PortableController owns the shared portable.Portable server on a worker thread and
 reports its URL + live phone status via signals. PortableView is the centred card
@@ -45,7 +45,7 @@ class PortableController(QObject):
         self.qrReady.emit(url)
         while self._poll:
             if not self._portable.alive():
-                self.failed.emit("Phone server stopped — switch to This Mac and back to retry.")
+                self.failed.emit("Phone server stopped, switch to This Mac and back to retry.")
                 return
             self.statusUpdate.emit(self._portable.status())
             time.sleep(2.0)

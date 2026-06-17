@@ -1,4 +1,4 @@
-"""macui — native macOS extras for Spoofr: a menu-bar item and a panic hotkey.
+"""macui, native macOS extras for Spoofr: a menu-bar item and a panic hotkey.
 
 Both are best-effort and macOS-only (pyobjc, already a pymobiledevice3 dep). Every
 action is marshalled back to the Tk app through its main-thread queue (``app._post``)

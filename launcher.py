@@ -1,4 +1,4 @@
-"""Spoofr — standalone QR launcher (superseded by the app's built-in iPhone tab).
+"""Spoofr, standalone QR launcher (superseded by the app's built-in iPhone tab).
 
 Run `.venv/bin/python launcher.py` for a standalone QR window. Click
 Start: it brings up the phone-control server and shows a QR code + link. Scan the
@@ -190,7 +190,7 @@ class Launcher(ctk.CTk):
             self.after(0, self._show_running)
             self._start_monitor()
         except _AdminCancelled:
-            self._reset_to_start("Admin password cancelled — the tunnel needs it once to start.")
+            self._reset_to_start("Admin password cancelled, the tunnel needs it once to start.")
         except Exception as e:
             self._reset_to_start(f"Couldn't start: {e}")
 
@@ -219,7 +219,7 @@ class Launcher(ctk.CTk):
         self.proc = None  # root server isn't a child we can poll/terminate directly
 
     def _show_running(self):
-        self._status("●  Waiting for your phone — scan the QR", AMBER)
+        self._status("●  Waiting for your phone, scan the QR", AMBER)
         self.start_btn.configure(state="normal", text="Stop", fg_color=GHOST, hover_color=GHOST_HI)
         tmp = Path(tempfile.gettempdir()) / "spoofer-qr.png"
         segno.make(self.url, error="m").save(str(tmp), scale=8, border=3)  # dark-on-white = reliable
@@ -257,7 +257,7 @@ class Launcher(ctk.CTk):
         if not self._running:
             return
         if not tunnel_up:
-            self.status.configure(text="⚠  Tunnel stopped — click Stop, then Start to restore.",
+            self.status.configure(text="⚠  Tunnel stopped, click Stop, then Start to restore.",
                                   text_color=RED)
             return
         if not port_up or st is None:
@@ -269,20 +269,20 @@ class Launcher(ctk.CTk):
             extra = f" · iOS {ios}" if ios else ""
             self.status.configure(text=f"●  {nm} connected{extra}", text_color=GREEN)
         else:
-            self.status.configure(text="●  Waiting for your phone — scan the QR", text_color=AMBER)
+            self.status.configure(text="●  Waiting for your phone, scan the QR", text_color=AMBER)
 
     def _recover_server(self):
         if not self._running:
             return
         if _port_open("127.0.0.1", TUNNELD_PORT):
-            self.status.configure(text="●  Server hiccup — auto-restarting…", text_color=AMBER)
+            self.status.configure(text="●  Server hiccup, auto-restarting…", text_color=AMBER)
             try:
                 self._start_nonroot()       # same port + token → the phone's session survives
                 self._start_monitor()
             except Exception as e:
                 self.status.configure(text=f"⚠  Couldn't auto-restart: {e}", text_color=RED)
         else:
-            self.status.configure(text="⚠  Server & tunnel stopped — click Stop, then Start.",
+            self.status.configure(text="⚠  Server & tunnel stopped, click Stop, then Start.",
                                   text_color=RED)
 
     # ---- one-time wireless enable (so the cable is never needed again) ----
@@ -306,12 +306,12 @@ class Launcher(ctk.CTk):
             chk = subprocess.run(PMD + ["lockdown", "wifi-connections"],
                                  capture_output=True, text=True, timeout=20)
             if '"EnableWifiConnections": true' in chk.stdout:
-                self._wifi_msg("✓  Wireless enabled — unplug the cable; it stays on from now on.", GREEN)
+                self._wifi_msg("✓  Wireless enabled, unplug the cable; it stays on from now on.", GREEN)
             else:
                 tail = (chk.stderr or "").strip().splitlines()
                 self._wifi_msg("Couldn't confirm it turned on" + (f": {tail[-1]}" if tail else "."), RED)
         except subprocess.TimeoutExpired:
-            self._wifi_msg("The iPhone didn't respond — unlock it and try again.", RED)
+            self._wifi_msg("The iPhone didn't respond, unlock it and try again.", RED)
         except Exception as e:
             self._wifi_msg(f"Failed: {e}", RED)
         finally:

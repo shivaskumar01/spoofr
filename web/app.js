@@ -67,7 +67,7 @@ map.on("click", (e) => {
   const lng = e.lngLat.lng, lat = e.lngLat.lat;
   if (mode === "teleport") {
     setPin(lng, lat);
-    hint(`Pinned ${fmt(lat, lng)} — tap “Set location here”.`);
+    hint(`Pinned ${fmt(lat, lng)}, tap “Set location here”.`);
   } else {
     route.push([lng, lat]); drawRoute();
     hint(`${route.length} waypoint(s). Press Start to walk the route.`);
@@ -96,7 +96,7 @@ async function doConnect() {
     else if (r.error) { setStatus("Not connected", "red"); hint(r.error); }
     else if (r.name) { connected = true; setStatus(`Connected · ${r.name} · iOS ${r.ios}`, "green"); }
   } catch (e) {
-    setStatus("Not connected", "red"); hint("Can’t reach the Mac — is the server still running?");
+    setStatus("Not connected", "red"); hint("Can’t reach the Mac, is the server still running?");
   } finally {
     connecting = false;
   }
@@ -134,7 +134,7 @@ async function doSearch() {
   map.flyTo({ center: [r.lon, r.lat], zoom: 15 });
   if (mode === "route") document.querySelector('#seg button[data-mode="teleport"]').click();
   setPin(r.lon, r.lat);
-  hint(`Found “${q}” — tap “Set location here”.`);
+  hint(`Found “${q}”, tap “Set location here”.`);
   $("q").blur();
 }
 
@@ -171,7 +171,7 @@ function showWizard() {
     const r = await post("/connect");           // succeeds once Developer Mode is on
     if (r && r.name) {
       connected = true;
-      $("wiz-status").textContent = "✓  Developer Mode on — connecting…";
+      $("wiz-status").textContent = "✓  Developer Mode on, connecting…";
       $("wiz-status").style.color = "var(--green)";
       setTimeout(closeWizard, 900);
     }

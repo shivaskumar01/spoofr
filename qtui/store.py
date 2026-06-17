@@ -1,4 +1,4 @@
-"""Tiny settings store — the same ~/.spoofr/settings.json the Tk app uses, so
+"""Tiny settings store, the same ~/.spoofr/settings.json the Tk app uses, so
 saved places, recents, and preferences carry over between the two front-ends.
 """
 

@@ -1,4 +1,4 @@
-"""A GPU-accelerated slippy-map widget — the native replacement for the Tk
+"""A GPU-accelerated slippy-map widget, the native replacement for the Tk
 canvas map.
 
 It is a QGraphicsView (OpenGL viewport) over a Web-Mercator tile pyramid:
@@ -9,7 +9,7 @@ It is a QGraphicsView (OpenGL viewport) over a Web-Mercator tile pyramid:
     a GPU view-scale, so pinch is buttery and tiles only re-grid when the level flips;
   * markers keep a constant on-screen size (ItemIgnoresTransformations); routes are
     cosmetic-pen paths that stay a constant width at any zoom;
-  * macOS trackpad pinch/scroll arrive as real Qt gesture/wheel events — no pyobjc.
+  * macOS trackpad pinch/scroll arrive as real Qt gesture/wheel events, no pyobjc.
 
 Public surface mirrors what the app needs: set_center/center, set_zoom/zoom,
 zoom_at, add_marker/move_marker/remove_item, set_path, plus `clicked(lat, lon)`
@@ -125,7 +125,7 @@ class TileMap(QGraphicsView):
         self._zoom_target: float = self._zoom
 
         # single-click is emitted after a beat so a double-click (zoom) can
-        # cancel it — otherwise zooming would also drop a pin / waypoint
+        # cancel it, otherwise zooming would also drop a pin / waypoint
         self._click_timer = QTimer(self)
         self._click_timer.setSingleShot(True)
         self._click_timer.setInterval(min(QApplication.doubleClickInterval(), 250))
@@ -169,7 +169,7 @@ class TileMap(QGraphicsView):
         self._apply_view()
 
     def pan_to(self, lat: float, lon: float):
-        """Lightweight recenter (no transform rebuild) — for follow-during-walk."""
+        """Lightweight recenter (no transform rebuild), for follow-during-walk."""
         self._clat, self._clon = lat, lon
         self.centerOn(self._scene_pt(lat, lon))
         self._layout_tiles()
@@ -301,7 +301,7 @@ class TileMap(QGraphicsView):
 
     def _apply_view(self):
         """Set the GPU scale + recenter, then lay out tiles. The scene is only
-        re-based (rect + overlay reprojection — O(overlay points)) when the
+        re-based (rect + overlay reprojection, O(overlay points)) when the
         integer level actually flips, so pinch frames stay cheap even with a
         dense GPX route on the map."""
         if self._z != self._based_z:
@@ -348,11 +348,11 @@ class TileMap(QGraphicsView):
                 if key not in self._tiles:
                     self._make_tile(key)
                     fresh.append(key)
-                elif key in self._failed:      # earlier fetch errored — try again
+                elif key in self._failed:      # earlier fetch errored, try again
                     self._failed.discard(key)
                     self._request(key)
         # seed brand-new tiles with imagery rescaled from the level we're leaving,
-        # BEFORE that level is pruned — zooming never blanks to the background
+        # BEFORE that level is pruned, zooming never blanks to the background
         for key in fresh:
             ph = self._placeholder(key)
             if ph is not None:

@@ -2,7 +2,7 @@
 
 Every `core.*` call blocks (it round-trips to the iPhone over the tunnel), so it
 must run off the GUI thread. This QObject owns the live `core.Device`, runs each
-operation on a daemon thread, and reports back with Qt signals — which, emitted
+operation on a daemon thread, and reports back with Qt signals, which, emitted
 from a worker thread to this GUI-thread object, auto-queue onto the GUI thread.
 So nothing here ever touches widgets directly; the window just connects slots.
 """
@@ -16,12 +16,12 @@ from PySide6.QtCore import QObject, Signal
 from . import theme
 
 # `core` / `portable` pull in all of pymobiledevice3 (heavy). They are imported
-# lazily inside the worker threads so launching the app stays instant — the first
+# lazily inside the worker threads so launching the app stays instant, the first
 # Connect pays the import cost, and it happens off the GUI thread.
 
 
 class DeviceBridge(QObject):
-    # text, hex-color  — drive the status pill
+    # text, hex-color, drive the status pill
     status = Signal(str, str)
     # one-line feedback for the hint bar
     hint = Signal(str)
@@ -104,7 +104,7 @@ class DeviceBridge(QObject):
                 self.hint.emit(f"Failed: {e}")
                 # core already rebuilt the DVT channel and retried, so the whole
                 # session/tunnel is dead (e.g. the cable was pulled and the old
-                # tunnel went with it) — rebuild the session in the background
+                # tunnel went with it), rebuild the session in the background
                 if self.device is dev:
                     self._begin_reconnect(dev)
         threading.Thread(target=work, daemon=True).start()
@@ -112,7 +112,7 @@ class DeviceBridge(QObject):
     def restore(self, panic: bool = False):
         dev = self.device
         if not dev:
-            self.hint.emit("Not connected — nothing to restore.")
+            self.hint.emit("Not connected, nothing to restore.")
             return
 
         def work():
@@ -159,7 +159,7 @@ class DeviceBridge(QObject):
                 return
             st = core.link_status(dev.serial)
             if st is None:
-                continue                    # transient usbmux hiccup — no information
+                continue                    # transient usbmux hiccup, no information
             if st:
                 misses = 0
                 if st != dev.link:          # e.g. cable pulled with wireless on
@@ -180,7 +180,7 @@ class DeviceBridge(QObject):
 
     def _begin_reconnect(self, dead):
         """The session died (device vanished, or the tunnel under it went stale).
-        Close it WITHOUT clearing — the spoof stays on the phone — and quietly
+        Close it WITHOUT clearing, the spoof stays on the phone, and quietly
         rebuild for up to RECONNECT_WINDOW seconds."""
         if self._reconnecting:
             return
@@ -195,7 +195,7 @@ class DeviceBridge(QObject):
                          daemon=True).start()
 
     def cancel_reconnect(self):
-        """User gave up waiting — settle the UI through the normal lost path."""
+        """User gave up waiting, settle the UI through the normal lost path."""
         if not self._reconnecting:
             return
         self._reconnecting = False
@@ -216,7 +216,7 @@ class DeviceBridge(QObject):
         attempt = 0
         while time.monotonic() < deadline and not cancelled():
             # if the root tunnel itself died we can't rebuild silently (that
-            # would pop a password prompt out of nowhere) — give up cleanly
+            # would pop a password prompt out of nowhere), give up cleanly
             if os.geteuid() != 0 and not portable.port_open("127.0.0.1", portable.TUNNELD_PORT):
                 break
             attempt += 1
@@ -234,7 +234,7 @@ class DeviceBridge(QObject):
                 self._start_monitor()
                 return
             except core.DeveloperModeRequired:
-                break                    # needs the user — fall through to lost
+                break                    # needs the user, fall through to lost
             except Exception:
                 pass
             self.status.emit("Waiting for the iPhone…", theme.AMBER)
@@ -279,7 +279,7 @@ class DeviceBridge(QObject):
         import core
         try:
             core.enable_wireless()
-            self.wirelessResult.emit(True, "Wireless is on — unplug whenever. Your iPhone "
+            self.wirelessResult.emit(True, "Wireless is on, unplug whenever. Your iPhone "
                                            "stays controllable on this Wi-Fi.")
         except Exception as e:
             self.wirelessResult.emit(False, str(e))

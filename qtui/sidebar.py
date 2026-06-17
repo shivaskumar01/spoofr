@@ -267,10 +267,10 @@ class Sidebar(QFrame):
         self._wifi_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._wifi_btn.clicked.connect(lambda: self.goWireless.emit())
         lay.addWidget(self._wifi_btn)
-        initial = ("✓  Wireless is on — the cable is optional."
+        initial = ("✓  Wireless is on, the cable is optional."
                    if self.settings.get("wireless_on")
                    else "With the cable in, click once. After that you can connect and "
-                        "control the iPhone over Wi-Fi — no cable.")
+                        "control the iPhone over Wi-Fi, no cable.")
         self._wifi_status = _label(initial, 12,
                                    theme.GREEN if self.settings.get("wireless_on") else theme.MUTED)
         lay.addWidget(self._wifi_status)
@@ -289,9 +289,9 @@ class Sidebar(QFrame):
     def refresh_wireless(self, on: bool):
         """Called after each connect with the device's actual switch state."""
         if on:
-            self.set_wireless_status("✓  Wireless is on — the cable is optional.", theme.GREEN)
+            self.set_wireless_status("✓  Wireless is on, the cable is optional.", theme.GREEN)
         else:
-            self.set_wireless_status("Wireless is off — with the cable in, click above "
+            self.set_wireless_status("Wireless is off, with the cable in, click above "
                                      "to enable it.", theme.MUTED)
 
     def _switch_row(self, text, on, cb):
@@ -319,10 +319,10 @@ class Sidebar(QFrame):
         area, lay = self._scroll()
         lay.addWidget(_label("About Spoofr", 15, weight=700))
         lay.addWidget(_label(
-            "Spoofr sets your iPhone’s GPS to anywhere on the map — every app on your phone "
+            "Spoofr sets your iPhone’s GPS to anywhere on the map, every app on your phone "
             "then sees that location. No jailbreak.\n\n"
             "Spoofing is fine for development, privacy and games. Using it to defraud or to "
-            "defeat court-ordered monitoring can be illegal — how you use it is on you.",
+            "defeat court-ordered monitoring can be illegal, how you use it is on you.",
             13, theme.MUTED))
         lay.addSpacing(8)
         lay.addWidget(_label("Version 1.0  ·  iOS 17–26", 12, theme.MUTED))

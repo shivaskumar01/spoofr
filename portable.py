@@ -1,4 +1,4 @@
-"""Portable mode — hand iPhone control to the phone over Wi-Fi.
+"""Portable mode, hand iPhone control to the phone over Wi-Fi.
 
 The desktop app (gui.py) uses this to flip into "iPhone" mode: make sure the
 Wi-Fi tunnel is up (elevating once with the macOS password dialog if needed),
@@ -96,7 +96,7 @@ def ensure_tunnel() -> None:
     if r.returncode != 0:
         err = (r.stderr or "").strip()
         if "-128" in err or "User canceled" in err:
-            raise PermissionError("Admin password cancelled — the Wi-Fi tunnel needs it once.")
+            raise PermissionError("Admin password cancelled, the Wi-Fi tunnel needs it once.")
         raise RuntimeError(err.splitlines()[-1] if err else "couldn't start the Wi-Fi tunnel")
     for _ in range(48):
         if port_open("127.0.0.1", TUNNELD_PORT):

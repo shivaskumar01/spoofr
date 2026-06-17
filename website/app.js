@@ -35,7 +35,7 @@ try {
 } catch (e) {
   document.querySelectorAll(".reveal").forEach(el => el.classList.add("in"));
 }
-// safety net — never leave anything hidden if observers misbehave
+// safety net, never leave anything hidden if observers misbehave
 setTimeout(() => document.querySelectorAll(".reveal:not(.in)").forEach(el => {
   if (el.getBoundingClientRect().top < innerHeight) el.classList.add("in");
 }), 1600);
