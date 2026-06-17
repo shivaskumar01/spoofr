@@ -7,6 +7,11 @@ from a headless always-on host.
 It works on every iOS from 17 through 26.x. Nothing is pinned to a version, because
 it rides Apple's universal personalized developer image.
 
+## API keys
+
+None. Everything runs locally against your own iPhone over USB or Wi-Fi. The pairing
+token (`SPOOFER_TOKEN`) is generated for you, so there is nothing to input.
+
 ## How it works
 
 Spoofr is a native Mac app (PySide6, in `qtui/`) with a This Mac / iPhone switch.
