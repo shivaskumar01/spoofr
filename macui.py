@@ -1,9 +1,9 @@
 """macui, native macOS extras for Spoofr: a menu-bar item and a panic hotkey.
 
 Both are best-effort and macOS-only (pyobjc, already a pymobiledevice3 dep). Every
-action is marshalled back to the Tk app through its main-thread queue (``app._post``)
-so nothing here ever touches Tk directly. If pyobjc is missing or anything fails,
-``install()`` returns ``None`` and the app runs exactly as before.
+action is marshalled back onto the Qt event loop through ``app._post`` so nothing
+here ever touches a widget from a Cocoa callback. If pyobjc is missing or anything
+fails, ``install()`` returns ``None`` and the app runs exactly as before.
 
 Panic hotkey: Control-Option-Command-R restores the real GPS from anywhere. The
 system-wide part needs a one-time Accessibility grant (System Settings → Privacy &

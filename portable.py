@@ -1,9 +1,9 @@
 """Portable mode, hand iPhone control to the phone over Wi-Fi.
 
-The desktop app (gui.py) uses this to flip into "iPhone" mode: make sure the
-Wi-Fi tunnel is up (elevating once with the macOS password dialog if needed),
-run the phone-control server, and produce a QR the phone scans. The Mac stays
-the host; the phone becomes the control surface.
+The desktop app uses this to flip into "iPhone" mode: make sure the Wi-Fi tunnel
+is up (elevating once with the macOS password dialog if needed), run the
+phone-control server, and produce a QR the phone scans. The Mac stays the host;
+the phone becomes the control surface.
 """
 
 from __future__ import annotations
@@ -27,10 +27,13 @@ TUNNELD_PORT = 49151
 
 def _helper_cmd(*args: str) -> list[str]:
     """Command that re-invokes this app in a helper mode (--tunneld / --server).
-    Frozen bundle: the app executable dispatches on argv. Dev: venv python + gui.py."""
+
+    Frozen bundle: the app executable dispatches on argv. Dev: venv python +
+    spoofr_app.py, which is the same dispatch with none of the UI attached, so the
+    root tunnel helper never imports a GUI toolkit."""
     if getattr(sys, "frozen", False):
         return [sys.executable, *args]
-    return [str(PY), str(HERE / "gui.py"), *args]
+    return [str(PY), str(HERE / "spoofr_app.py"), *args]
 
 
 def lan_ip() -> str:

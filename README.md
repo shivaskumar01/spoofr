@@ -37,11 +37,9 @@ in the loop. There is no jailbreak-free way to run this on the phone alone.
    ```bash
    cd spoofr
    curl -Ls https://micro.mamba.pm/api/micromamba/osx-arm64/latest | tar -xj -C /tmp bin/micromamba
-   /tmp/bin/micromamba create -y -p .venv -c conda-forge python=3.11 'tk=8.6.*' pip
+   /tmp/bin/micromamba create -y -p .venv -c conda-forge python=3.11 pip
    .venv/bin/pip install -e ".[dev]"
    ```
-
-   (Tk 8.6 is only there for the legacy Tk UI, `gui.py`. The main app is Qt.)
 
 4. Install the `ipsw` CLI. pymobiledevice3 shells out to it to build the developer disk
    image (iOS 17+). Without it, mounting hangs. Use the cask and clear quarantine:
@@ -75,9 +73,18 @@ Reconnecting while it tries, and you click it to stop.
 
 ## Running it
 
-Open Spoofr (the icon in Applications, or double-click `Spoofr.app`). No sudo, no
-Terminal. It starts the Wi-Fi tunnel itself and asks for your macOS password once, and
-only if the tunnel isn't already up.
+Double-click **`dist/Spoofr.app`**. That is the real app: a self-contained bundle with
+its own Python, so it can ask macOS for a precise CoreLocation fix. No sudo, no Terminal.
+It starts the Wi-Fi tunnel itself and asks for your macOS password once, and only if the
+tunnel isn't already up.
+
+The `Spoofr.app` at the top of the repo is a one-line launcher for *this checkout* —
+handy while developing, but it runs as a plain script, so macOS denies it CoreLocation
+and the map centres on your IP (city-level) instead.
+
+Rebuilding the bundle changes its code signature (it is ad-hoc signed, not
+Developer-ID), so macOS treats it as a new app and asks for Location permission again.
+That's expected, not a bug.
 
 - This Mac: Connect, click the map, then Set location here. Route mode drops numbered
   waypoints and walks them at a pace you pick (Walk, Run, Cycle, or Drive, with loop or
@@ -106,19 +113,23 @@ token-gated and LAN-only by design, so don't port-forward it.
 ## Layout
 
 ```
-qtui/          # the native Qt app: app, mapview, tilemap, bridge, sidebar, and more
+qtui/          # the app: app, mapview, tilemap, bridge, sidebar, markers, and more
 core.py        # pymobiledevice3 engine: tunnel, mount, set/clear/route, wireless
 portable.py    # iPhone mode: tunnel elevation, runs the phone server, makes the QR
 server.py      # stdlib HTTP control server for the phone
-web/           # the phone's web UI (MapLibre)
+web/           # the phone's web UI (MapLibre, served locally)
 host.py        # headless always-on host mode (launchd daemon)
-spoofr_app.py  # entry point for the packaged .app (PyInstaller)
-gui.py         # the legacy Tk app (kept; also hosts the --tunneld/--server helpers)
-launcher.py    # superseded standalone QR launcher
-Spoofr.app     # double-click bundle that runs the Qt app from this checkout
-dist/          # packaged, signed Spoofr.app (exact CoreLocation needs the bundle)
-tests/, pyproject.toml
+spoofr_app.py  # one entry point: the app, and the --tunneld/--server helpers
+macui.py       # menu-bar item + panic hotkey (pyobjc, best-effort)
+Spoofr.app     # dev launcher for this checkout
+dist/          # the packaged app (exact CoreLocation needs the bundle)
+tests/, SpoofrQt.spec, pyproject.toml
 ```
+
+Every device write goes through one path — `qtui/bridge.py`'s `push()` — and every call
+into the phone is time-bounded in `core.py`. If a fix doesn't land, the app says so, stops
+whatever was moving, and rebuilds the session in the background rather than animating a
+map that no longer matches the phone.
 
 ## Tests
 
@@ -126,7 +137,17 @@ tests/, pyproject.toml
 .venv/bin/pytest
 ```
 
-Covers the route math (distance and interpolation). No device required.
+No device required. Covers the route math and coordinate parsing, the Web-Mercator
+projection, and — the ones that matter — the failure paths: that a wedged device call is
+bounded and frees its lock, that a Restore can overtake a fix already in flight, and that
+a dead session stops the walk/route workers and starts exactly one reconnect.
+
+Rebuild and check the bundle with:
+
+```bash
+.venv/bin/pyinstaller SpoofrQt.spec --noconfirm
+dist/Spoofr.app/Contents/MacOS/Spoofr --selftest      # expect: SELFTEST PASS
+```
 
 ## Legal
 

@@ -1,6 +1,6 @@
 """Spoofr's native Qt (PySide6) front-end.
 
-The Tk/customtkinter UI (gui.py) is being replaced by a true-native PySide6 app
-for a smooth, GPU-accelerated experience. The device/tunnel/route core
-(core.py, portable.py, server.py) is shared unchanged, only the UI is new.
+The whole desktop app: window shell, map, route editing, side menu and the
+iPhone (QR) hand-off. The device/tunnel core (core.py, portable.py, server.py)
+sits underneath and is shared with the phone-driven and headless host modes.
 """
