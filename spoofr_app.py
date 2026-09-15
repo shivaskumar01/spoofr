@@ -31,9 +31,11 @@ def main() -> None:
         import importlib
         sys.argv = sys.argv[:1]          # server.py reads a port from argv at import
         ok = True
-        for m in ("core", "portable", "server", "qtui.app", "qtui.geo",
-                  "pymobiledevice3", "pymobiledevice3.__main__", "PySide6.QtWidgets",
-                  "CoreLocation", "geocoder", "requests", "gpxpy", "segno"):
+        for m in ("applog", "core", "macui", "portable", "server",
+                  "qtui.app", "qtui.geo", "qtui.route", "qtui.tilemap",
+                  "pymobiledevice3", "pymobiledevice3.__main__",
+                  "PySide6.QtWidgets", "PySide6.QtNetwork",
+                  "CoreLocation", "geocoder", "requests", "gpxpy", "segno", "psutil"):
             try:
                 importlib.import_module(m)
                 print("OK  ", m)
