@@ -147,3 +147,61 @@ class TestTunnelElevation:
         assert argv[-1] == "--tunneld"
         assert "gui.py" not in " ".join(argv)
         assert "spoofr_app.py" in " ".join(argv)
+
+
+class TestTunnelProtocol:
+    """iOS 18.2+ dropped QUIC, and pymobiledevice3 only defaults to TCP on Python
+    3.13+ (remote/common.py). On 3.11 the daemon tries QUIC, fails every
+    handshake, and publishes no tunnel — while still holding its port, so the app
+    attaches happily and then reports that the phone must not be trusted."""
+
+    def test_the_daemon_is_asked_for_tcp(self):
+        import portable
+        argv = portable._helper_cmd("--tunneld", "--protocol", portable.TUNNEL_PROTOCOL)
+        assert argv[-3:] == ["--tunneld", "--protocol", "tcp"]
+        assert "--protocol tcp" in portable.tunnel_start_cmd()
+
+    def test_a_daemon_that_cannot_tunnel_is_retired_not_reused(self):
+        import portable
+        cmd = portable.tunnel_start_cmd(4242)
+        assert cmd.startswith("kill 4242 ;"), cmd
+        assert "--protocol tcp" in cmd
+        assert "pkill" not in cmd, "pkill -f would match the shell running this command"
+
+    def test_no_kill_when_nothing_is_running(self):
+        import portable
+        assert "kill" not in portable.tunnel_start_cmd(None)
+
+    def test_detects_a_root_daemon_it_cannot_introspect(self, monkeypatch):
+        """The daemon runs as root; psutil can't read its command line from a
+        normal user, so detection goes through ps."""
+        import portable
+
+        class Result:
+            stdout = ("  501 /usr/bin/something else\n"
+                      " 69863 /Applications/Spoofr.app/Contents/MacOS/Spoofr --tunneld\n")
+
+        monkeypatch.setattr(portable.subprocess, "run", lambda *a, **k: Result())
+        assert portable.running_tunneld() == (
+            69863, "/Applications/Spoofr.app/Contents/MacOS/Spoofr --tunneld")
+        assert portable.tunneld_pid() == 69863
+        assert portable.tunnel_speaks_tcp() is False      # no --protocol tcp -> retire it
+
+    def test_a_current_daemon_is_left_alone(self, monkeypatch):
+        import portable
+
+        class Result:
+            stdout = " 700 /Applications/Spoofr.app/Contents/MacOS/Spoofr --tunneld --protocol tcp\n"
+
+        monkeypatch.setattr(portable.subprocess, "run", lambda *a, **k: Result())
+        assert portable.tunnel_speaks_tcp() is True
+
+    def test_no_daemon_reads_as_not_current(self, monkeypatch):
+        import portable
+
+        class Result:
+            stdout = " 700 /usr/sbin/cupsd\n"
+
+        monkeypatch.setattr(portable.subprocess, "run", lambda *a, **k: Result())
+        assert portable.running_tunneld() is None
+        assert portable.tunnel_speaks_tcp() is False

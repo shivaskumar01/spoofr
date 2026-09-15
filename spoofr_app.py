@@ -13,9 +13,11 @@ import sys
 def main() -> None:
     args = sys.argv[1:]
     if args and args[0] == "--tunneld":
-        # privileged tunnel daemon (launched as root via osascript)
+        # privileged tunnel daemon (launched as root via osascript). Remaining
+        # args are passed straight through -- portable.py sends --protocol tcp,
+        # without which a modern iPhone can never be tunnelled.
         from pymobiledevice3.__main__ import main as pmd_main
-        sys.argv = ["pymobiledevice3", "remote", "tunneld"]
+        sys.argv = ["pymobiledevice3", "remote", "tunneld", *args[1:]]
         pmd_main()
     elif args and args[0] == "--server":
         # phone-control web server for iPhone (QR) mode

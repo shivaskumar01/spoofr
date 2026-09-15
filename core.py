@@ -66,7 +66,10 @@ from pymobiledevice3.services.mobile_image_mounter import auto_mount_personalize
 from pymobiledevice3.tunneld.api import TUNNELD_DEFAULT_ADDRESS, get_tunneld_devices
 from pymobiledevice3.usbmux import list_devices
 
-TUNNELD_LOG = Path("/tmp/spoofer-tunneld.log")
+# Same file portable.py points the privileged daemon at — these were spelled
+# differently ("spoofer" vs "spoofr"), so every diagnostic here read a file
+# that did not exist while the real errors piled up in the other one.
+TUNNELD_LOG = Path("/tmp/spoofr-tunneld.log")
 
 # Every device round-trip is bounded. Without these a single wedged call blocks
 # its caller forever *while holding Device._lock*, which freezes Restore GPS, the
@@ -602,8 +605,15 @@ async def _wait_for_rsd(udid: str, say: StatusFn, timeout: float = 25.0):
             return rsd
         if time.monotonic() >= deadline:
             raise SpooferError(
-                "The tunnel is up but hasn’t found this iPhone. Make sure it’s "
-                "unlocked and trusted, then click Connect again."
+                "The tunnel daemon is running, but it never opened a tunnel to this "
+                "iPhone.\n\n"
+                "This is almost certainly not a trust problem: Spoofr just read this "
+                "phone’s name and iOS version over the same connection, which it "
+                "could not have done if the phone weren’t paired and unlocked.\n\n"
+                "What the tunnel daemon last reported:\n"
+                f"{_tail(TUNNELD_LOG, 3)}\n\n"
+                "Quit Spoofr and open it again — the next Connect retires the old "
+                "daemon and starts a fresh one."
             )
         await asyncio.sleep(0.5)
 

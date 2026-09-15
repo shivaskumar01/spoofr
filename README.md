@@ -105,6 +105,20 @@ The phone's map (`web/app.js`) uses the same source, inverted in MapLibre's rast
 paint. To change basemaps, set a new `TileSource`; the tile cache is keyed to the
 URL, so switching never serves stale tiles from the old provider.
 
+## If Connect fails
+
+The status pill reading `Ready, iPhone on USB` only means macOS can see the phone. The
+tunnel is a separate thing, and it is where connecting actually fails.
+
+- **"The tunnel daemon is running, but it never opened a tunnel to this iPhone."** Not a
+  trust problem — Spoofr had already read the phone's name and iOS version by the time
+  that appears. The dialog quotes the daemon's own last words; `/tmp/spoofr-tunneld.log`
+  has the rest.
+- iOS 18.2 removed QUIC, and pymobiledevice3 only picks TCP by default on Python 3.13+,
+  so Spoofr starts the daemon with `--protocol tcp` explicitly. A daemon left running
+  from an older build keeps holding the port while failing every handshake; Connect now
+  notices one without that flag and retires it, which costs one extra admin prompt.
+
 ## Headless host (always-on, no desktop app)
 
 This turns the Mac into a permanent spoofing box where the phone's browser is the only

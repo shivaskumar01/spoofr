@@ -19,11 +19,20 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 HERE = Path(__file__).resolve().parent
 PY = HERE / ".venv" / "bin" / "python"
 TUNNELD_PORT = 49151
 TUNNELD_LOG = "/tmp/spoofr-tunneld.log"
+
+# iOS 18.2 removed QUIC, and pymobiledevice3 only picks TCP by default on Python
+# 3.13+ (remote/common.py: DEFAULT = TCP if sys.version_info >= (3, 13) else
+# QUIC). On 3.11 the daemon therefore tries QUIC, fails every handshake with
+# QuicProtocolNotSupportedError, and publishes no tunnel at all -- while still
+# listening on its port, so everything downstream looks like the phone simply
+# isn't trusted. Ask for TCP explicitly; it is the default on 3.13+ anyway.
+TUNNEL_PROTOCOL = "tcp"
 
 
 def _helper_cmd(*args: str) -> list[str]:
@@ -101,14 +110,69 @@ def detached_cmd(argv: list[str], log: str) -> str:
     return f"( {cmd} > {log} 2>&1 < /dev/null & )"
 
 
+def running_tunneld() -> Optional[tuple[int, str]]:
+    """(pid, command line) of a running Spoofr tunnel daemon, or None.
+
+    Deliberately ps and not psutil: the daemon runs as root, and psutil cannot
+    read another user’s command line without privileges — it would report no
+    daemon at all, and we’d try to start a second one on an occupied port.
+    """
+    try:
+        out = subprocess.run(["ps", "-Ao", "pid=,command="],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return None
+    for line in out.splitlines():
+        line = line.strip()
+        if "--tunneld" not in line:
+            continue
+        pid, _, cmd = line.partition(" ")
+        if pid.isdigit():
+            return int(pid), cmd
+    return None
+
+
+def tunneld_pid() -> Optional[int]:
+    found = running_tunneld()
+    return found[0] if found else None
+
+
+def tunnel_speaks_tcp() -> bool:
+    """Is the running daemon one that can actually open a tunnel?
+
+    A daemon started before this flag existed sits there answering on its port
+    while every handshake fails, which downstream is indistinguishable from an
+    untrusted phone. Detect it by its command line so we retire it rather than
+    attach to it.
+    """
+    found = running_tunneld()
+    if found is None:
+        return False
+    cmd = found[1]
+    return f"--protocol {TUNNEL_PROTOCOL}" in cmd or f"--protocol={TUNNEL_PROTOCOL}" in cmd
+
+
+def tunnel_start_cmd(stale_pid: Optional[int] = None) -> str:
+    """The shell command that (re)starts the tunnel daemon under one admin prompt.
+
+    When a daemon that cannot tunnel is already holding the port, retire it in
+    the same command — killing by pid rather than `pkill -f -- --tunneld`, whose
+    pattern would match the very shell running this.
+    """
+    start = detached_cmd(_helper_cmd("--tunneld", "--protocol", TUNNEL_PROTOCOL), TUNNELD_LOG)
+    return f"kill {stale_pid} ; sleep 2 ; {start}" if stale_pid else start
+
+
 def ensure_tunnel() -> None:
-    """Make sure tunneld is on :49151. If it's down and we're not root, start it
-    as a root daemon via ONE macOS admin prompt; then the non-root app attaches."""
-    if port_open("127.0.0.1", TUNNELD_PORT):
+    """Make sure a *working* tunneld is on :49151. If it's down (or up but unable
+    to tunnel), start a fresh one as root via ONE macOS admin prompt; then the
+    non-root app attaches."""
+    up = port_open("127.0.0.1", TUNNELD_PORT)
+    if up and tunnel_speaks_tcp():
         return
     if os.geteuid() == 0:
         return  # running as root → core._Tunneld.ensure() will spawn it
-    sh = detached_cmd(_helper_cmd("--tunneld"), TUNNELD_LOG)
+    sh = tunnel_start_cmd(tunneld_pid() if up else None)
     ascmd = sh.replace("\\", "\\\\").replace('"', '\\"')
     r = subprocess.run(["osascript", "-e",
                         f'do shell script "{ascmd}" with administrator privileges'],
