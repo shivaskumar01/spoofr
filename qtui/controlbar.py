@@ -68,12 +68,23 @@ class ControlBar(QFrame):
         self.speed_lbl = QLabel("1.4 m/s")
         self.speed_lbl.setFixedWidth(50); self.speed_lbl.setFont(theme.ui_font(12))
         rl.addWidget(self.speed_lbl)
-        start = _btn("Start", "primary"); start.clicked.connect(panel.start_route); rl.addWidget(start)
-        stop = _btn("Stop", "soft"); stop.clicked.connect(panel.stop_route); rl.addWidget(stop)
+        self.start_btn = _btn("Start", "primary")
+        self.start_btn.clicked.connect(panel.start_route); rl.addWidget(self.start_btn)
+        self.stop_btn = _btn("Stop", "soft")
+        self.stop_btn.clicked.connect(panel.stop_route); rl.addWidget(self.stop_btn)
         clear = _btn("Clear", "soft"); clear.clicked.connect(panel.clear_route); rl.addWidget(clear)
         h.addWidget(self.route_ctl)
         h.addStretch(1)
         self.route_ctl.hide()
+        panel.playingChanged.connect(self.set_playing)
+
+    def set_playing(self, playing: bool):
+        """Make a running route unmistakable: Start goes quiet, Stop lights up."""
+        self.start_btn.setEnabled(not playing)
+        self.start_btn.setText("Playing…" if playing else "Start")
+        self.stop_btn.setProperty("variant", "danger" if playing else "soft")
+        for b in (self.start_btn, self.stop_btn):
+            b.style().unpolish(b); b.style().polish(b)
 
     def _on_app_mode(self, val: str):
         iphone = (val == "iPhone")

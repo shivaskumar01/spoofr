@@ -23,6 +23,12 @@ from .markers import PulseMarker, make_pin, make_waypoint
 from .tilemap import TileMap
 
 _M_PER_DEG = 111_320.0
+ROUTE_DT = 1.0            # seconds between route fixes (real GPS is about 1 Hz)
+
+
+def _clock(seconds: float) -> str:
+    s = int(max(0, seconds))
+    return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
 
 
 def _jitter(lat: float, lon: float, radius_m: float = 4.0) -> tuple[float, float]:
@@ -73,6 +79,7 @@ class MapPanel(QFrame):
     hint = Signal(str)
     committed = Signal(float, float)     # a teleport set landed (-> recents)
     requestTeleport = Signal()           # search/place in route mode -> switch to teleport
+    playingChanged = Signal(bool)        # a route started / stopped
     # worker-thread results, marshalled back to the GUI thread
     _suggestReady = Signal(str, object)
     _geocodeReady = Signal(float, float)
@@ -80,6 +87,7 @@ class MapPanel(QFrame):
     _walkStep = Signal(float, float)
     _jitterStep = Signal(float, float)
     _routeSnapped = Signal(object)
+    _routeProgress = Signal(int, int, float, float)   # i, total, lat, lon
     _routeDone = Signal(str)
 
     def __init__(self, bridge, settings=None, parent=None):
@@ -127,6 +135,8 @@ class MapPanel(QFrame):
         self._path_ov = None            # route polyline overlay
         self._playing = False
         self._route_gen = 0
+        self._travelled: list[tuple[float, float]] = []   # the part already walked
+        self._travel_ov = None
 
         self._build_floating()
         self._build_walk_pad()
@@ -206,6 +216,7 @@ class MapPanel(QFrame):
         self._walkStep.connect(self._on_walk_step)
         self._jitterStep.connect(self._on_jitter_step)
         self._routeSnapped.connect(self._redraw_path)
+        self._routeProgress.connect(self._on_route_progress)
         self._routeDone.connect(self._on_route_done)
 
     def resizeEvent(self, e):
@@ -311,6 +322,7 @@ class MapPanel(QFrame):
     def clear_all(self):
         """Full clear on disconnect: stop motion and remove the live marker + pin."""
         self.stop_motion()
+        self._clear_travelled()
         for ov in (self._pin_ov, self._live_ov):
             if ov is not None:
                 self.map.remove_overlay(ov)
@@ -440,7 +452,10 @@ class MapPanel(QFrame):
     def _on_walk_step(self, lat: float, lon: float):
         self._set_live(lat, lon)
         self._active_spoof = (lat, lon)
-        if self._following:
+        # only recentre once the marker nears an edge: recentring every fix glues
+        # it to the middle of the screen, and a 1.4 m/s walk then looks like
+        # nothing is happening at all
+        if self._following and self.map.is_near_edge(lat, lon):
             self.map.pan_to(lat, lon)
 
     def key_walk(self, key: str, pressed: bool):
@@ -550,6 +565,7 @@ class MapPanel(QFrame):
 
     def clear_route(self):
         self.stop_route()
+        self._clear_travelled()
         for ov in self._wp_ovs:
             self.map.remove_overlay(ov)
         self._wp_ovs.clear()
@@ -572,6 +588,10 @@ class MapPanel(QFrame):
         gen = self._route_gen
         self._playing = True
         self._following = True
+        self._clear_travelled()
+        self.playingChanged.emit(True)
+        self.hint.emit("Starting at waypoint 1 — your iPhone jumps there first, "
+                       "then follows the route.")
         threading.Thread(target=self._route_worker,
                          args=(list(self.points), gen), daemon=True).start()
 
@@ -579,6 +599,13 @@ class MapPanel(QFrame):
         self._route_gen += 1          # invalidate any running route worker
         self._playing = False
         self._following = False
+        self.playingChanged.emit(False)
+
+    def _clear_travelled(self):
+        self._travelled = []
+        if self._travel_ov is not None:
+            self.map.remove_overlay(self._travel_ov)
+            self._travel_ov = None
 
     def _route_stale(self, gen: int) -> bool:
         return gen != self._route_gen or self.bridge.device is None
@@ -595,12 +622,17 @@ class MapPanel(QFrame):
     def _route_worker(self, pts, gen: int):
         try:
             if self.snap:
-                self.hint.emit("Snapping the route to roads…")
+                self.hint.emit(f"Finding a {self._transport.lower()} route along real roads…")
                 snapped = route.snap_to_roads(pts, self.profile)
-                if len(snapped) >= 2 and not self._route_stale(gen):
-                    pts = snapped
-                    self._routeSnapped.emit(list(snapped))
-            path = route.route_points(pts, max(self.speed, 0.3), dt=1.0)
+                if self._route_stale(gen):
+                    self._routeDone.emit("Route stopped.")
+                    return
+                if snapped.ok:
+                    pts = snapped.points
+                    self._routeSnapped.emit(list(pts))
+                else:
+                    self.hint.emit("Couldn’t reach the router — going straight between waypoints.")
+            path = route.route_points(pts, max(self.speed, 0.3), dt=ROUTE_DT)
             if not path:
                 self._routeDone.emit("Nothing to walk.")
                 return
@@ -619,8 +651,8 @@ class MapPanel(QFrame):
                                              "press Start again once it’s back.")
                         return
                     self._walkStep.emit(lat, lon)
-                    self.hint.emit(f"{self._transport}…  {i}/{total}   ({lat:.5f}, {lon:.5f})")
-                    if self._route_sleep(gen, 1.0):
+                    self._routeProgress.emit(i, total, lat, lon)
+                    if self._route_sleep(gen, ROUTE_DT):
                         self._routeDone.emit("Route stopped.")
                         return
                 if not repeat:
@@ -630,9 +662,26 @@ class MapPanel(QFrame):
             if gen == self._route_gen:
                 self._playing = False
 
+    def _on_route_progress(self, i: int, total: int, lat: float, lon: float):
+        """Draw the part already walked and say how much is left.
+
+        Without this the only sign a route is running is a coordinate readout,
+        which is indistinguishable from nothing happening when you are moving at
+        walking pace.
+        """
+        self._travelled.append((lat, lon))
+        if self._travel_ov is None:
+            self._travel_ov = self.map.add_path(self._travelled, color=theme.LIVE, width=6, z=6)
+        else:
+            self.map.update_path(self._travel_ov, self._travelled)
+        left = _clock(max(0, total - i) * ROUTE_DT)
+        self.hint.emit(f"{self._transport}…  {i * 100 // max(total, 1)}%  ·  {left} to go  "
+                       f"·  {i}/{total} fixes")
+
     def _on_route_done(self, msg: str):
         self._playing = False
         self._following = False
+        self.playingChanged.emit(False)
         self.hint.emit(msg)
         if self._live_pos:
             self._anchor = self._live_pos

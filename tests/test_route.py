@@ -66,3 +66,69 @@ def test_route_density_scales_with_dt():
     fine = route_points(pts, speed_mps=10.0, dt=0.5)
     coarse = route_points(pts, speed_mps=10.0, dt=2.0)
     assert len(fine) > len(coarse)
+
+
+class TestProfileRouting:
+    """Picking Walk / Cycle / Drive has to change the road route.
+
+    router.project-osrm.org accepts /route/v1/walking/ and /route/v1/cycling/ and
+    answers "Ok" while returning the identical car geometry every time, so the
+    transport selector did nothing and a walk was routed down whatever a car
+    would take. The profile lives in the host now, not the path.
+    """
+
+    def test_each_profile_gets_its_own_router(self):
+        from qtui.route import OSRM_INSTANCES, osrm_url
+        hosts = {p: osrm_url(p, "0,0;1,1") for p in ("walking", "cycling", "driving")}
+        assert len(set(hosts.values())) == 3, f"profiles share a router: {hosts}"
+        assert "routed-foot" in hosts["walking"]
+        assert "routed-bike" in hosts["cycling"]
+        assert "routed-car" in hosts["driving"]
+        assert len(OSRM_INSTANCES) == 3
+
+    def test_car_only_public_server_is_not_used(self):
+        from qtui.route import osrm_url
+        for p in ("walking", "cycling", "driving"):
+            assert "router.project-osrm.org" not in osrm_url(p, "0,0;1,1")
+
+    def test_unknown_profile_falls_back_rather_than_crashing(self):
+        from qtui.route import DEFAULT_PROFILE, osrm_url
+        assert osrm_url("teleportation", "0,0;1,1") == osrm_url(DEFAULT_PROFILE, "0,0;1,1")
+
+    def test_snap_returns_geometry_and_the_router_estimate(self, monkeypatch):
+        import qtui.route as route
+
+        class Resp:
+            @staticmethod
+            def json():
+                return {"code": "Ok", "routes": [{
+                    "distance": 1960.0, "duration": 1572.0,
+                    "geometry": {"coordinates": [[-122.42, 37.77], [-122.41, 37.78],
+                                                 [-122.40, 37.79]]}}]}
+
+        seen = {}
+
+        def fake_get(url, **kw):
+            seen["url"] = url
+            return Resp()
+
+        monkeypatch.setattr("requests.get", fake_get)
+        out = route.snap_to_roads([(37.77, -122.42), (37.79, -122.40)], "cycling")
+        assert out.ok is True
+        assert out.points[0] == (37.77, -122.42) and len(out.points) == 3
+        assert out.distance_m == 1960.0 and out.duration_s == 1572.0
+        assert "routed-bike" in seen["url"]
+
+    def test_a_dead_router_still_lets_the_route_play(self, monkeypatch):
+        """Straight lines beat refusing to move."""
+        import qtui.route as route
+
+        def boom(*a, **k):
+            raise OSError("no network")
+
+        monkeypatch.setattr("requests.get", boom)
+        pts = [(37.77, -122.42), (37.79, -122.40)]
+        out = route.snap_to_roads(pts, "walking")
+        assert out.ok is False
+        assert out.points == pts
+        assert out.duration_s == 0.0

@@ -263,6 +263,24 @@ class TileMap(QGraphicsView):
         ov.lat, ov.lon = lat, lon
         ov.item.setPos(self._scene_pt(lat, lon))
 
+    def update_path(self, ov: "_PathOverlay", pts):
+        """Repoint an existing polyline (used to grow the travelled track)."""
+        ov.pts = list(pts)
+        self._rebuild_path(ov)
+
+    def is_near_edge(self, lat: float, lon: float, margin: float = 0.22) -> bool:
+        """True when this coordinate has drifted out of the comfortable middle.
+
+        Following a moving marker by recentring on every fix pins it to the
+        centre of the screen, which makes a walk at 1.4 m/s look completely
+        stationary — the map slides and the marker never does. Recentring only
+        when it nears an edge lets it visibly travel across the view.
+        """
+        p = self.mapFromScene(self._scene_pt(lat, lon))
+        r = self.viewport().rect()
+        mx, my = r.width() * margin, r.height() * margin
+        return not (mx <= p.x() <= r.width() - mx and my <= p.y() <= r.height() - my)
+
     def remove_overlay(self, ov):
         try:
             self._scene.removeItem(ov.item)

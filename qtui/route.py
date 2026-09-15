@@ -8,6 +8,7 @@ Call the network/file functions from a worker thread.
 from __future__ import annotations
 
 import math
+from typing import NamedTuple
 
 EARTH_RADIUS_M = 6_371_000.0
 
@@ -38,28 +39,67 @@ def route_points(points, speed_mps: float, dt: float = 1.0):
     return path
 
 
-def snap_to_roads(points, profile: str = "walking", timeout: float = 8.0):
-    """Replace straight segments with real road geometry (OSRM). Returns the
-    densified [(lat,lon),…]; on any failure returns `points` unchanged."""
+# One OSRM instance per travel profile, all keyless (FOSSGIS).
+#
+# The obvious endpoint, router.project-osrm.org, only hosts the car profile: it
+# accepts /route/v1/walking/ and /route/v1/cycling/ and answers "Ok" while
+# returning the identical car geometry every time, so picking Walk or Cycle
+# changed nothing and routed you down whatever a car would take. These three
+# instances really are built from the foot, bike and car profiles — over the same
+# pair of points they return 1.96 km / 2.19 km / 2.68 km respectively.
+OSRM_INSTANCES = {
+    "walking": "https://routing.openstreetmap.de/routed-foot",
+    "cycling": "https://routing.openstreetmap.de/routed-bike",
+    "driving": "https://routing.openstreetmap.de/routed-car",
+}
+DEFAULT_PROFILE = "walking"
+
+
+class Snapped(NamedTuple):
+    """The result of asking a router to follow real roads."""
+    points: list                 # [(lat, lon), …] — the original points if it failed
+    ok: bool = False             # did the router actually answer?
+    distance_m: float = 0.0
+    duration_s: float = 0.0      # the router's own estimate for this profile
+
+
+def osrm_url(profile: str, coords: str) -> str:
+    """The routing URL for a travel profile. The profile lives in the host, not
+    the path: each instance is built for exactly one and ignores the path
+    segment, which is why the path below is always "driving"."""
+    host = OSRM_INSTANCES.get(profile, OSRM_INSTANCES[DEFAULT_PROFILE])
+    return f"{host}/route/v1/driving/{coords}"
+
+
+def snap_to_roads(points, profile: str = DEFAULT_PROFILE, timeout: float = 12.0) -> Snapped:
+    """Replace straight segments with real road geometry for `profile`.
+
+    Returns the densified points plus the router's distance/duration. On any
+    failure returns the original points with ok=False, so a route still plays as
+    straight lines rather than not playing at all.
+    """
     pts = [tuple(p) for p in points]
     if len(pts) < 2:
-        return pts
+        return Snapped(pts)
     import requests
     coords = ";".join(f"{lon},{lat}" for lat, lon in pts)
-    url = f"https://router.project-osrm.org/route/v1/{profile}/{coords}"
     try:
-        r = requests.get(url, params={"overview": "full", "geometries": "geojson"},
+        r = requests.get(osrm_url(profile, coords),
+                         params={"overview": "full", "geometries": "geojson"},
                          headers={"User-Agent": "Spoofr/1.0 (macOS location utility)"},
                          timeout=timeout)
         data = r.json()
         if data.get("code") == "Ok" and data.get("routes"):
-            geo = data["routes"][0]["geometry"]["coordinates"]   # [lon, lat]
+            route = data["routes"][0]
+            geo = route["geometry"]["coordinates"]   # [lon, lat]
             snapped = [(c[1], c[0]) for c in geo if len(c) >= 2]
             if len(snapped) >= 2:
-                return snapped
+                return Snapped(snapped, True,
+                               float(route.get("distance") or 0.0),
+                               float(route.get("duration") or 0.0))
     except Exception:
         pass
-    return pts
+    return Snapped(pts)
 
 
 def parse_gpx(path: str):

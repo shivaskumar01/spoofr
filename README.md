@@ -88,8 +88,12 @@ That's expected, not a bug.
 
 - This Mac: Connect, click the map, then Set location here. Route mode drops numbered
   waypoints and walks them at a pace you pick (Walk, Run, Cycle, or Drive, with loop or
-  bounce, and GPX import and export). Restore GPS clears the spoof. The panic hotkey
-  ⌃⌥⌘R restores real GPS from anywhere.
+  bounce, and GPX import and export). With "Snap route to roads" on, the route follows
+  real streets for the pace you picked — a walk takes footpaths, a drive takes roads —
+  and each fix is pushed once a second, like a real GPS. A cyan track trails behind the
+  marker so you can see the progress, and the hint bar shows the percentage and time
+  left. Restore GPS clears the spoof. The panic hotkey ⌃⌥⌘R restores real GPS from
+  anywhere.
 - iPhone: click the iPhone tab, scan the QR with your Camera, and control it from Safari.
 
 For a dev run: `.venv/bin/python -m qtui`. The basemap is `DEFAULT_SOURCE` in
