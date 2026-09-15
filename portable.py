@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import shlex
 import socket
@@ -110,69 +111,107 @@ def detached_cmd(argv: list[str], log: str) -> str:
     return f"( {cmd} > {log} 2>&1 < /dev/null & )"
 
 
-def running_tunneld() -> Optional[tuple[int, str]]:
-    """(pid, command line) of a running Spoofr tunnel daemon, or None.
+def is_tunneld_cmd(cmd: str) -> bool:
+    """Is this command line really one of our tunnel daemons?
+
+    These pids get SIGKILLed as root, so the test has to be exact. A substring
+    match is not: any process whose arguments merely *mention* --tunneld matches
+    one, and while this was being written that included both the shell evaluating
+    a command containing the word and a `python -c` whose inline source quoted an
+    example. Either would have been killed.
+
+    So --tunneld must directly follow the program it belongs to, in one of the two
+    shapes _helper_cmd() produces — the frozen bundle, or a Python running
+    spoofr_app.py — and inline-code invocations are never a daemon.
+    """
+    if re.search(r"(?:^|\s)-c(?:\s|$)", cmd):        # python -c / sh -c, not a daemon
+        return False
+    head = cmd.split(None, 1)[0] if cmd.strip() else ""
+    if head.endswith(("/sh", "/zsh", "/bash", "/env")):
+        return False
+    if re.search(r"/Spoofr\s+--tunneld(?:\s|$)", cmd):            # packaged app
+        return True
+    return "python" in head and bool(                              # dev run
+        re.search(r"spoofr_app\.py\s+--tunneld(?:\s|$)", cmd))
+
+
+def _ps_lines() -> list[str]:
+    """Every process on the machine as "pid command" lines (seam for tests)."""
+    try:
+        return subprocess.run(["ps", "-Ao", "pid=,command="],
+                              capture_output=True, text=True, timeout=5).stdout.splitlines()
+    except Exception:
+        return []
+
+
+def running_tunnelds() -> list[tuple[int, str]]:
+    """Every running Spoofr tunnel daemon, as (pid, command line).
 
     Deliberately ps and not psutil: the daemon runs as root, and psutil cannot
     read another user’s command line without privileges — it would report no
-    daemon at all, and we’d try to start a second one on an occupied port.
+    daemon at all, and we’d try to start another on an occupied port.
+
+    All of them, not the first: a daemon that refuses to die keeps the port while
+    later ones pile up behind it, idle and useless, and the one still answering is
+    the oldest rather than the newest.
     """
-    try:
-        out = subprocess.run(["ps", "-Ao", "pid=,command="],
-                             capture_output=True, text=True, timeout=5).stdout
-    except Exception:
-        return None
-    for line in out.splitlines():
-        line = line.strip()
-        if "--tunneld" not in line:
-            continue
-        pid, _, cmd = line.partition(" ")
-        if pid.isdigit():
-            return int(pid), cmd
-    return None
+    found = []
+    for line in _ps_lines():
+        pid, _, cmd = line.strip().partition(" ")
+        if pid.isdigit() and is_tunneld_cmd(cmd):
+            found.append((int(pid), cmd))
+    return found
 
 
-def tunneld_pid() -> Optional[int]:
-    found = running_tunneld()
-    return found[0] if found else None
+def tunneld_pids() -> list[int]:
+    return [pid for pid, _ in running_tunnelds()]
 
 
-def tunnel_speaks_tcp() -> bool:
-    """Is the running daemon one that can actually open a tunnel?
-
-    A daemon started before this flag existed sits there answering on its port
-    while every handshake fails, which downstream is indistinguishable from an
-    untrusted phone. Detect it by its command line so we retire it rather than
-    attach to it.
-    """
-    found = running_tunneld()
-    if found is None:
-        return False
-    cmd = found[1]
+def _speaks_tcp(cmd: str) -> bool:
     return f"--protocol {TUNNEL_PROTOCOL}" in cmd or f"--protocol={TUNNEL_PROTOCOL}" in cmd
 
 
-def tunnel_start_cmd(stale_pid: Optional[int] = None) -> str:
+def tunnel_is_healthy() -> bool:
+    """Is there exactly one daemon, and can it actually open a tunnel?
+
+    Two or more means an older one is still holding the port and the newer ones
+    never bound it, so whoever is answering is not the one we asked for — start
+    over rather than trust it.
+    """
+    daemons = running_tunnelds()
+    return len(daemons) == 1 and _speaks_tcp(daemons[0][1])
+
+
+def tunnel_start_cmd(stale_pids: Optional[list[int]] = None) -> str:
     """The shell command that (re)starts the tunnel daemon under one admin prompt.
 
-    When a daemon that cannot tunnel is already holding the port, retire it in
-    the same command — killing by pid rather than `pkill -f -- --tunneld`, whose
-    pattern would match the very shell running this.
+    SIGKILL, not SIGTERM. tunneld is uvicorn, and on TERM it tries to shut down
+    gracefully — which never finishes while its tunnel tasks are stuck retrying a
+    handshake that cannot succeed. A TERMed daemon was still alive and still
+    holding the port half an hour later, with two replacements idling behind it
+    because they could never bind. There is no state to lose: the daemon is a
+    stateless supervisor, and dropping its tunnels is the point.
+
+    Killing by pid rather than `pkill -f -- --tunneld`, whose pattern would match
+    the very shell running this command.
     """
     start = detached_cmd(_helper_cmd("--tunneld", "--protocol", TUNNEL_PROTOCOL), TUNNELD_LOG)
-    return f"kill {stale_pid} ; sleep 2 ; {start}" if stale_pid else start
+    if not stale_pids:
+        return start
+    pids = " ".join(str(p) for p in stale_pids)
+    return (f"kill {pids} 2>/dev/null ; sleep 1 ; kill -9 {pids} 2>/dev/null ; "
+            f"sleep 1 ; {start}")
 
 
 def ensure_tunnel() -> None:
     """Make sure a *working* tunneld is on :49151. If it's down (or up but unable
     to tunnel), start a fresh one as root via ONE macOS admin prompt; then the
     non-root app attaches."""
-    up = port_open("127.0.0.1", TUNNELD_PORT)
-    if up and tunnel_speaks_tcp():
+    if port_open("127.0.0.1", TUNNELD_PORT) and tunnel_is_healthy():
         return
     if os.geteuid() == 0:
         return  # running as root → core._Tunneld.ensure() will spawn it
-    sh = tunnel_start_cmd(tunneld_pid() if up else None)
+    sh = tunnel_start_cmd(tunneld_pids())
     ascmd = sh.replace("\\", "\\\\").replace('"', '\\"')
     r = subprocess.run(["osascript", "-e",
                         f'do shell script "{ascmd}" with administrator privileges'],

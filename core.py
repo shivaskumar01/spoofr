@@ -39,6 +39,7 @@ for _brew in ("/opt/homebrew/bin", "/usr/local/bin"):
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + _brew
 
 import asyncio
+import re
 import shutil
 import socket
 import subprocess
@@ -195,6 +196,23 @@ def _port_open(host: str, port: int) -> bool:
     with socket.socket() as s:
         s.settimeout(0.5)
         return s.connect_ex((host, port)) == 0
+
+
+def _tunneld_tail(lines: int = 4) -> str:
+    """The last few *interesting* lines of the tunnel daemon's log.
+
+    It writes an access line for every poll, and the app polls twice a second, so
+    a plain tail is all routine traffic: the error dialog showed three "GET /"
+    lines and nothing about why the tunnel failed, while the real message sat a
+    few hundred lines above it.
+    """
+    try:
+        raw = TUNNELD_LOG.read_text().splitlines()
+    except OSError:
+        return "(the tunnel daemon has not written a log)"
+    noise = re.compile(r'"(?:GET|POST|PUT|DELETE) \S+ HTTP/[\d.]+"')
+    kept = [ln for ln in raw if ln.strip() and not noise.search(ln)]
+    return "\n".join(kept[-lines:]) or "(nothing but routine polling)"
 
 
 def _tail(path: Path, lines: int = 6) -> str:
@@ -611,7 +629,7 @@ async def _wait_for_rsd(udid: str, say: StatusFn, timeout: float = 25.0):
                 "phone’s name and iOS version over the same connection, which it "
                 "could not have done if the phone weren’t paired and unlocked.\n\n"
                 "What the tunnel daemon last reported:\n"
-                f"{_tail(TUNNELD_LOG, 3)}\n\n"
+                f"{_tunneld_tail(4)}\n\n"
                 "Quit Spoofr and open it again — the next Connect retires the old "
                 "daemon and starts a fresh one."
             )

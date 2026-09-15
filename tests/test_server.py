@@ -161,47 +161,98 @@ class TestTunnelProtocol:
         assert argv[-3:] == ["--tunneld", "--protocol", "tcp"]
         assert "--protocol tcp" in portable.tunnel_start_cmd()
 
-    def test_a_daemon_that_cannot_tunnel_is_retired_not_reused(self):
-        import portable
-        cmd = portable.tunnel_start_cmd(4242)
-        assert cmd.startswith("kill 4242 ;"), cmd
-        assert "--protocol tcp" in cmd
-        assert "pkill" not in cmd, "pkill -f would match the shell running this command"
-
     def test_no_kill_when_nothing_is_running(self):
         import portable
-        assert "kill" not in portable.tunnel_start_cmd(None)
+        assert "kill" not in portable.tunnel_start_cmd([])
 
-    def test_detects_a_root_daemon_it_cannot_introspect(self, monkeypatch):
-        """The daemon runs as root; psutil can't read its command line from a
-        normal user, so detection goes through ps."""
+    def test_stale_daemons_are_killed_hard_and_all_of_them(self):
+        """SIGTERM is not enough: uvicorn tries a graceful shutdown that never
+        finishes while its tunnel tasks are stuck retrying, so a TERMed daemon was
+        still holding the port half an hour later with two replacements idling
+        behind it."""
         import portable
+        cmd = portable.tunnel_start_cmd([69863, 72448, 72526])
+        assert "kill -9 69863 72448 72526" in cmd, cmd
+        assert cmd.index("kill -9") < cmd.index("--protocol tcp"), "must die before we start"
+        assert "pkill" not in cmd, "pkill -f would match the shell running this command"
 
-        class Result:
-            stdout = ("  501 /usr/bin/something else\n"
-                      " 69863 /Applications/Spoofr.app/Contents/MacOS/Spoofr --tunneld\n")
-
-        monkeypatch.setattr(portable.subprocess, "run", lambda *a, **k: Result())
-        assert portable.running_tunneld() == (
-            69863, "/Applications/Spoofr.app/Contents/MacOS/Spoofr --tunneld")
-        assert portable.tunneld_pid() == 69863
-        assert portable.tunnel_speaks_tcp() is False      # no --protocol tcp -> retire it
-
-    def test_a_current_daemon_is_left_alone(self, monkeypatch):
+    def test_more_than_one_daemon_is_never_healthy(self, monkeypatch):
+        """Whoever is answering is the oldest, not the one we asked for."""
         import portable
+        two = ("  100 /x/Spoofr --tunneld --protocol tcp\n"
+               "  200 /x/Spoofr --tunneld --protocol tcp\n")
+        monkeypatch.setattr(portable, "_ps_lines", lambda: two.splitlines())
+        assert portable.tunnel_is_healthy() is False
 
-        class Result:
-            stdout = " 700 /Applications/Spoofr.app/Contents/MacOS/Spoofr --tunneld --protocol tcp\n"
-
-        monkeypatch.setattr(portable.subprocess, "run", lambda *a, **k: Result())
-        assert portable.tunnel_speaks_tcp() is True
-
-    def test_no_daemon_reads_as_not_current(self, monkeypatch):
+    def test_a_single_current_daemon_is_left_alone(self, monkeypatch):
         import portable
+        monkeypatch.setattr(portable, "_ps_lines",
+                            lambda: ["  700 /x/Spoofr --tunneld --protocol tcp"])
+        assert portable.tunnel_is_healthy() is True
 
-        class Result:
-            stdout = " 700 /usr/sbin/cupsd\n"
+    def test_a_daemon_without_the_flag_is_not_healthy(self, monkeypatch):
+        import portable
+        monkeypatch.setattr(portable, "_ps_lines", lambda: ["  700 /x/Spoofr --tunneld"])
+        assert portable.tunnel_is_healthy() is False
+        assert portable.tunneld_pids() == [700]
 
-        monkeypatch.setattr(portable.subprocess, "run", lambda *a, **k: Result())
-        assert portable.running_tunneld() is None
-        assert portable.tunnel_speaks_tcp() is False
+
+class TestWhatCountsAsATunnelDaemon:
+    """These pids are SIGKILLed as root, so the match has to be exact.
+
+    A substring test matches any process whose arguments merely mention
+    --tunneld. While this was being written that included the shell evaluating a
+    command containing the word, and a `python -c` whose inline source quoted an
+    example command. Both would have been killed.
+    """
+
+    @pytest.mark.parametrize("cmd", [
+        "/Users/x/dist/Spoofr.app/Contents/MacOS/Spoofr --tunneld",
+        "/Users/x/dist/Spoofr.app/Contents/MacOS/Spoofr --tunneld --protocol tcp",
+        "/x/.venv/bin/python /x/spoofr_app.py --tunneld --protocol tcp",
+        "/x/.venv/bin/python3.11 /x/spoofr_app.py --tunneld",
+    ])
+    def test_our_daemons_are_matched(self, cmd):
+        import portable
+        assert portable.is_tunneld_cmd(cmd) is True
+
+    @pytest.mark.parametrize("cmd", [
+        "/bin/zsh -c source /x/snap.sh && echo --tunneld",
+        "/bin/sh -c ( /x/Spoofr --tunneld --protocol tcp & )",
+        "/x/.venv/bin/python -c import portable; '/x/spoofr_app.py --tunneld'",
+        "/usr/bin/grep -- --tunneld /tmp/spoofr-tunneld.log",
+        "/usr/bin/tail -f /tmp/spoofr-tunneld.log",
+        "/x/Spoofr --tunnelder",
+        "/x/Spoofr",
+        "/x/.venv/bin/python /x/server.py --server 8765",
+        "",
+    ])
+    def test_everything_else_survives(self, cmd):
+        import portable
+        assert portable.is_tunneld_cmd(cmd) is False
+
+
+class TestTunnelDiagnostics:
+    def test_routine_polling_is_filtered_out_of_the_error(self, tmp_path, monkeypatch):
+        """The dialog quoted three "GET /" lines and nothing about the failure."""
+        import core
+        log = tmp_path / "tunneld.log"
+        log.write_text(
+            "2026-01-01 pymobiledevice3.tunneld WARNING QuicProtocolNotSupportedError: boom\n"
+            + 'INFO:     127.0.0.1:50354 - "GET / HTTP/1.1" 200 OK\n' * 40)
+        monkeypatch.setattr(core, "TUNNELD_LOG", log)
+        out = core._tunneld_tail(4)
+        assert "QuicProtocolNotSupportedError" in out
+        assert "GET /" not in out
+
+    def test_a_quiet_log_says_so_instead_of_looking_empty(self, tmp_path, monkeypatch):
+        import core
+        log = tmp_path / "tunneld.log"
+        log.write_text('INFO:     127.0.0.1:1 - "GET / HTTP/1.1" 200 OK\n')
+        monkeypatch.setattr(core, "TUNNELD_LOG", log)
+        assert "routine polling" in core._tunneld_tail(4)
+
+    def test_a_missing_log_does_not_raise(self, tmp_path, monkeypatch):
+        import core
+        monkeypatch.setattr(core, "TUNNELD_LOG", tmp_path / "nope.log")
+        assert "not written a log" in core._tunneld_tail(4)
