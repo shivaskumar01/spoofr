@@ -24,6 +24,7 @@ from .tilemap import TileMap
 
 _M_PER_DEG = 111_320.0
 ROUTE_DT = 1.0            # seconds between route fixes (real GPS is about 1 Hz)
+ORIGIN_MAX_M = 100_000.0  # past this, "start from where you are" stops meaning anything
 
 
 def _clock(seconds: float) -> str:
@@ -137,6 +138,7 @@ class MapPanel(QFrame):
         self._route_gen = 0
         self._travelled: list[tuple[float, float]] = []   # the part already walked
         self._travel_ov = None
+        self._route_is_track = False    # imported GPX: the file already includes a start
 
         self._build_floating()
         self._build_walk_pad()
@@ -521,8 +523,8 @@ class MapPanel(QFrame):
         self.mode = mode
         if mode == "route":
             self.set_btn.hide()
-            self.hint.emit("Route, click your STARTING point first (usually where you are), "
-                           "then your destination. Press Start to go.")
+            self.hint.emit("Route, click where you want to end up. Your iPhone starts from "
+                           "where it is now; extra clicks add stops on the way.")
         else:
             if self.pending:
                 self.set_btn.show(); self.set_btn.raise_()
@@ -544,17 +546,65 @@ class MapPanel(QFrame):
     def set_snap(self, on: bool):
         self.snap = bool(on)
 
+    def route_origin(self):
+        """Where a route starts: wherever the iPhone is right now.
+
+        The start is not something you should have to click — the phone is
+        already somewhere. That makes a single waypoint a destination, and it is
+        also why starting a route no longer jumps you to waypoint 1 first.
+        """
+        return self._active_spoof or self._live_pos
+
+    def route_plan(self) -> tuple[list, bool]:
+        """(points to walk, whether the current position was prepended).
+
+        Not prepended for an imported track — the file is the route, start
+        included — nor when the phone is a long way from the first waypoint:
+        routing from Paris to a pin in San Francisco is never what the click
+        meant, and no road router would honour it anyway.
+        """
+        pts = list(self.points)
+        origin = self.route_origin()
+        if self._route_is_track or origin is None or not pts:
+            return pts, False
+        gap = route.meters(origin, pts[0])
+        if gap > ORIGIN_MAX_M or gap < 1.0:
+            return pts, False
+        return [origin] + pts, True
+
     def _add_waypoint(self, lat: float, lon: float):
         self.points.append((lat, lon))
-        n = len(self.points)
-        color = theme.GREEN if n == 1 else theme.BLUE   # green = start point
-        ov = self.map.add_marker(lat, lon, make_waypoint(n, color=color), anchor="center", z=8)
-        self._wp_ovs.append(ov)
+        self._route_is_track = False
+        self._redraw_waypoints()
         self._redraw_path(self.points)
+        n = len(self.points)
         if n == 1:
-            self.hint.emit("● Start set (green). Now click your destination, and any stops on the way.")
+            if self.route_origin() is not None:
+                self.hint.emit("Destination set. Press Start to head there from where your "
+                               "iPhone is now, or click again to add a stop on the way.")
+            else:
+                self.hint.emit("Destination set. Set your iPhone’s location first so the "
+                               "route has somewhere to start, or drop a second waypoint.")
         else:
-            self.hint.emit(f"{n} points · green = start. Add more stops, or press Start.")
+            self.hint.emit(f"{n} stops · green = destination. Press Start, or keep adding.")
+
+    def _redraw_waypoints(self):
+        """Renumber and recolour the markers; the last one is the destination.
+
+        A dense imported track would mean hundreds of markers, so past a dozen
+        only the ends are marked.
+        """
+        for ov in self._wp_ovs:
+            self.map.remove_overlay(ov)
+        self._wp_ovs.clear()
+        n = len(self.points)
+        if not n:
+            return
+        for i in (range(1, n + 1) if n <= 12 else (1, n)):
+            la, lo = self.points[i - 1]
+            color = theme.GREEN if i == n else theme.BLUE
+            self._wp_ovs.append(self.map.add_marker(
+                la, lo, make_waypoint(i, color=color), anchor="center", z=8))
 
     def _redraw_path(self, pts):
         if self._path_ov is not None:
@@ -566,6 +616,7 @@ class MapPanel(QFrame):
     def clear_route(self):
         self.stop_route()
         self._clear_travelled()
+        self._route_is_track = False
         for ov in self._wp_ovs:
             self.map.remove_overlay(ov)
         self._wp_ovs.clear()
@@ -579,8 +630,9 @@ class MapPanel(QFrame):
         if self.bridge.device is None:
             self.hint.emit("Connect to your iPhone first.")
             return
-        if len(self.points) < 2:
-            self.hint.emit("Drop at least two waypoints first.")
+        pts, from_here = self.route_plan()
+        if len(pts) < 2:
+            self.hint.emit(self._why_no_route())
             return
         if self._playing:
             return
@@ -590,10 +642,25 @@ class MapPanel(QFrame):
         self._following = True
         self._clear_travelled()
         self.playingChanged.emit(True)
-        self.hint.emit("Starting at waypoint 1 — your iPhone jumps there first, "
-                       "then follows the route.")
-        threading.Thread(target=self._route_worker,
-                         args=(list(self.points), gen), daemon=True).start()
+        self.hint.emit(
+            "Routing from where your iPhone is now…" if from_here else
+            "Starting at waypoint 1 — your iPhone jumps there first, then follows the route.")
+        threading.Thread(target=self._route_worker, args=(pts, gen), daemon=True).start()
+
+    def _why_no_route(self) -> str:
+        """Say which of the ways to be un-routable this is, not just that it is."""
+        if not self.points:
+            return "Click the map to drop a destination first."
+        origin = self.route_origin()
+        if origin is None:
+            return ("Set your iPhone’s location first so the route has a starting point, "
+                    "or drop a second waypoint.")
+        km = route.meters(origin, self.points[0]) / 1000.0
+        if km * 1000.0 > ORIGIN_MAX_M:
+            return (f"Your iPhone is {km:,.0f} km from that pin — too far to route from "
+                    f"where it is. Set its location nearer first, or drop a second waypoint.")
+        return ("That pin is where your iPhone already is — pick a destination a little "
+                "further away.")
 
     def stop_route(self):
         self._route_gen += 1          # invalidate any running route worker
@@ -690,12 +757,8 @@ class MapPanel(QFrame):
     def load_route(self, pts):
         self.clear_route()
         self.points = [tuple(p) for p in pts]
-        n = len(self.points)
-        for i in (1, n):                 # mark only start/end (GPX can be dense)
-            la, lo = self.points[i - 1]
-            color = theme.GREEN if i == 1 else theme.BLUE
-            self._wp_ovs.append(self.map.add_marker(
-                la, lo, make_waypoint(i, color=color), anchor="center", z=8))
+        self._route_is_track = True      # a recorded track already has its own start
+        self._redraw_waypoints()
         self._redraw_path(self.points)
         self.map.set_view(self.points[0][0], self.points[0][1], 14)
 
@@ -714,8 +777,9 @@ class MapPanel(QFrame):
         return True
 
     def export_gpx(self):
-        if len(self.points) < 2:
-            self.hint.emit("Drop at least two waypoints (or import a track) to export.")
+        pts, _ = self.route_plan()       # export what Start would actually walk
+        if len(pts) < 2:
+            self.hint.emit("Drop a destination (or import a track) to export.")
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Export route as GPX", "spoofr-route.gpx", "GPX track (*.gpx)")
@@ -723,8 +787,8 @@ class MapPanel(QFrame):
             return
         try:
             with open(path, "w", encoding="utf-8") as fh:
-                fh.write(route.build_gpx(self.points, "Spoofr route"))
-            self.hint.emit(f"Exported {len(self.points)} points → {path}")
+                fh.write(route.build_gpx(pts, "Spoofr route"))
+            self.hint.emit(f"Exported {len(pts)} points → {path}")
         except Exception as e:
             self.hint.emit(f"Export failed: {e}")
 

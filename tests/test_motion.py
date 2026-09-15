@@ -152,3 +152,102 @@ class TestRouteFeedback:
         # one far outside the view must
         panel._on_walk_step(37.9, -122.2)
         assert panel.map.center() != centre
+
+
+class TestRouteStartsFromThePhone:
+    """A destination should be one click.
+
+    The phone is already somewhere, so the start is not something you should have
+    to place. Requiring two waypoints also meant the first fix jumped the phone to
+    waypoint 1 — which is what read as "it just teleports me there".
+    """
+
+    SF = (37.7749, -122.4194)
+    DEST = (37.7880, -122.4074)
+
+    def _route_mode(self, panel, origin=SF):
+        from tests.test_bridge import FakeDevice
+        panel.bridge.device = FakeDevice()
+        panel.set_snap(False)
+        panel.set_mode("route")
+        panel._active_spoof = origin
+        return panel
+
+    def test_one_waypoint_is_enough(self, panel):
+        self._route_mode(panel)
+        panel._on_click(*self.DEST)
+        pts, from_here = panel.route_plan()
+        assert len(panel.points) == 1
+        assert len(pts) == 2 and from_here is True
+
+    def test_the_route_begins_where_the_phone_is(self, panel):
+        """No jump to waypoint 1."""
+        self._route_mode(panel)
+        panel._on_click(*self.DEST)
+        pts, _ = panel.route_plan()
+        assert pts[0] == self.SF
+        assert pts[-1] == self.DEST
+
+    def test_a_live_marker_counts_as_the_start_when_nothing_is_spoofed(self, panel):
+        self._route_mode(panel, origin=None)
+        panel._set_live(*self.SF)
+        panel._on_click(*self.DEST)
+        pts, from_here = panel.route_plan()
+        assert from_here is True and pts[0] == self.SF
+
+    def test_extra_waypoints_are_stops_not_a_start(self, panel):
+        self._route_mode(panel)
+        for p in [(37.780, -122.415), (37.785, -122.410), self.DEST]:
+            panel._on_click(*p)
+        pts, from_here = panel.route_plan()
+        assert from_here is True
+        assert len(pts) == 4 and pts[0] == self.SF and pts[-1] == self.DEST
+
+    def test_a_far_away_phone_is_not_dragged_across_the_world(self, panel):
+        """Routing Paris -> a pin in San Francisco is never what the click meant."""
+        self._route_mode(panel, origin=(48.8566, 2.3522))
+        panel._on_click(*self.DEST)
+        pts, from_here = panel.route_plan()
+        assert from_here is False and pts == [self.DEST]
+
+    def test_an_imported_track_keeps_its_own_start(self, panel):
+        self._route_mode(panel)
+        track = [(37.80, -122.40), (37.81, -122.39), (37.82, -122.38)]
+        panel.load_route(track)
+        pts, from_here = panel.route_plan()
+        assert from_here is False and pts == track
+
+    def test_dropping_a_waypoint_makes_it_a_route_again(self, panel):
+        self._route_mode(panel)
+        panel.load_route([(37.80, -122.40), (37.81, -122.39)])
+        assert panel._route_is_track is True
+        panel._on_click(*self.DEST)
+        assert panel._route_is_track is False, "hand-placed waypoints are not a track"
+
+    def test_the_last_waypoint_is_the_destination(self, panel):
+        self._route_mode(panel)
+        panel._on_click(*self.DEST)
+        assert len(panel._wp_ovs) == 1
+        panel._on_click(37.79, -122.40)
+        assert len(panel._wp_ovs) == 2, "markers renumbered as stops are added"
+
+    def test_a_dense_track_only_marks_its_ends(self, panel):
+        self._route_mode(panel)
+        panel.load_route([(37.7 + i * 0.001, -122.4) for i in range(200)])
+        assert len(panel._wp_ovs) == 2, "200 markers would bury the map"
+
+    @pytest.mark.parametrize("origin, points, expected", [
+        ((37.7749, -122.4194), [], "drop a destination"),
+        (None, [(37.788, -122.407)], "starting point"),
+        ((48.8566, 2.3522), [(37.788, -122.407)], "km from that pin"),
+        ((37.7749, -122.4194), [(37.7749, -122.4194)], "already is"),
+    ])
+    def test_each_refusal_explains_itself(self, panel, origin, points, expected):
+        self._route_mode(panel, origin=origin)
+        panel.points = list(points)
+        assert expected in panel._why_no_route()
+
+    def test_start_refuses_without_a_destination(self, panel, qapp):
+        self._route_mode(panel)
+        panel.start_route()
+        assert panel._playing is False

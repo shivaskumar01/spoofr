@@ -86,9 +86,11 @@ Rebuilding the bundle changes its code signature (it is ad-hoc signed, not
 Developer-ID), so macOS treats it as a new app and asks for Location permission again.
 That's expected, not a bug.
 
-- This Mac: Connect, click the map, then Set location here. Route mode drops numbered
-  waypoints and walks them at a pace you pick (Walk, Run, Cycle, or Drive, with loop or
-  bounce, and GPX import and export). With "Snap route to roads" on, the route follows
+- This Mac: Connect, click the map, then Set location here. Route mode needs one click:
+  your iPhone is already somewhere, so that click is the destination and the route starts
+  from where the phone is. Extra clicks add stops along the way. Pick a pace (Walk, Run,
+  Cycle, or Drive, with loop or bounce, and GPX import and export). With "Snap route to
+  roads" on, the route follows
   real streets for the pace you picked — a walk takes footpaths, a drive takes roads —
   and each fix is pushed once a second, like a real GPS. A cyan track trails behind the
   marker so you can see the progress, and the hint bar shows the percentage and time

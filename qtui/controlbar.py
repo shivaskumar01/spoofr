@@ -66,7 +66,8 @@ class ControlBar(QFrame):
         self.speed.valueChanged.connect(self._on_speed)
         rl.addWidget(self.speed)
         self.speed_lbl = QLabel("1.4 m/s")
-        self.speed_lbl.setFixedWidth(50); self.speed_lbl.setFont(theme.ui_font(12))
+        # "26.0 m/s" needs more than 50px; it was rendering as "26.0 m"
+        self.speed_lbl.setFixedWidth(70); self.speed_lbl.setFont(theme.ui_font(12))
         rl.addWidget(self.speed_lbl)
         self.start_btn = _btn("Start", "primary")
         self.start_btn.clicked.connect(panel.start_route); rl.addWidget(self.start_btn)
