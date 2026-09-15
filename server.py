@@ -11,44 +11,88 @@ to the Mac over HTTP. Stdlib only, no web framework, live updates via polling.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import secrets
+import signal
 import socket
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import core
+from qtui import geo, route      # pure helpers: no Qt, no pymobiledevice3
 
 WEB = (Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parent) / "web"
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765  # override: server.py 8766
+# Port override: `spoofr_app.py --server 8766`. Tolerant of a non-numeric argv
+# (a bare int() here made the module unimportable from anything with flags).
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 8765
 TOKEN = os.environ.get("SPOOFER_TOKEN") or secrets.token_urlsafe(16)  # launcher can pin it
+
+# Served without a token (they are just the UI). MapLibre is vendored rather than
+# pulled from a CDN: the phone is often on a Wi-Fi that can reach this Mac and
+# nothing else, and a blank page with no controls is not a usable fallback.
+STATIC = ("/app.js", "/style.css", "/maplibre-gl.js", "/maplibre-gl.css")
 
 
 class State:
-    """One spoofing session, shared across request threads (device ops serialized)."""
+    """One spoofing session, shared across request threads.
+
+    Mirrors the desktop app's DeviceBridge: a single write path, a liveness
+    monitor that actually exercises the developer channel, and a bounded
+    auto-reconnect. Without those, status() reported `connected` forever after one
+    successful connect, so the phone happily drove a session that had been dead
+    for half an hour.
+    """
+
+    RECONNECT_WINDOW = 120.0     # keep trying this long before giving up
+    HEARTBEAT_EVERY = 15.0       # re-assert the spoof this often to prove the channel
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.device: core.Device | None = None
         self.name = ""
         self.ios = ""
-        self.live: tuple[float, float] | None = None   # current (live) location
-        self.home: tuple[float, float] | None = None   # approx real location (IP)
+        self.link = ""                                 # "USB" / "Wi-Fi" / "USB + Wi-Fi"
+        self.live: tuple[float, float] | None = None   # what the phone's map shows
+        self.spoof: tuple[float, float] | None = None  # what the iPhone is actually set to
+        self.home: tuple[float, float] | None = None   # approx real location
         self.route_thread: threading.Thread | None = None
         self.stop = threading.Event()
         self.dev_mode_needed = False
+        self.lost = False                              # session died since last connect
+        self._connect_lock = threading.Lock()
+        self._connecting = False
+        self._reconnecting = False
+        self._monitor_gen = 0
+        self._reconnect_gen = 0
 
-    def _halt_route(self) -> None:
-        self.stop.set()
-        t = self.route_thread
-        if t and t.is_alive():
-            t.join(timeout=3)
+    # ---- connect ----------------------------------------------------------
 
     def connect(self) -> dict:
+        """Open a session, or report one that is already open or in progress.
+
+        The phone retries /connect on a timer, and the Developer Mode wizard
+        retries on another. Without this guard each retry became a full
+        core.connect() queued on self.lock, piling up threads behind a connect
+        that can take a minute.
+        """
+        with self._connect_lock:
+            if self.device is not None:
+                return self._session()
+            if self._connecting:
+                return {"connecting": True}
+            self._connecting = True
+        try:
+            return self._connect()
+        finally:
+            self._connecting = False
+
+    def _connect(self) -> dict:
         with self.lock:
             try:
                 dev = core.connect()
@@ -57,59 +101,194 @@ class State:
                 core.reveal_developer_mode()
                 raise
             self.device = dev
-            self.name, self.ios = dev.name, dev.ios
+            self.name, self.ios, self.link = dev.name, dev.ios, dev.link
             self.dev_mode_needed = False
+            self.lost = False
             if self.home is None:
-                self.home = core.my_location()
-            self.live = self.home
-            return {"name": dev.name, "ios": dev.ios}
+                self.home = geo.current_location()
+            if self.live is None:
+                self.live = self.home
+            core._log(f"phone server connected: {dev.name} iOS {dev.ios} via {dev.link}")
+        self._start_monitor()
+        return self._session()
+
+    def _session(self) -> dict:
+        return {"name": self.name, "ios": self.ios, "link": self.link}
+
+    # ---- the single write path --------------------------------------------
+
+    def push(self, lat: float, lon: float) -> bool:
+        """Move the iPhone. False means the fix didn't land and the session is gone."""
+        dev = self.device
+        if dev is None:
+            return False
+        try:
+            dev.set(lat, lon)
+        except core.Cancelled:
+            return False                 # a restore/stop overtook it
+        except Exception as e:
+            self._session_lost(dev, e)
+            return False
+        self.live = self.spoof = (lat, lon)
+        return True
 
     def set_location(self, lat: float, lon: float) -> None:
-        with self.lock:
-            if not self.device:
-                raise RuntimeError("Not connected")
-            self._halt_route()
-            self.device.set(lat, lon)
-            self.live = (lat, lon)
+        if not self.device:
+            raise RuntimeError("Not connected")
+        self._halt_route()
+        if not self.push(lat, lon):
+            raise RuntimeError("Lost the iPhone, reconnecting… try again in a moment.")
+
+    # ---- route ------------------------------------------------------------
+
+    def _halt_route(self) -> None:
+        self.stop.set()
+        t = self.route_thread
+        if t and t.is_alive():
+            t.join(timeout=3)
 
     def start_route(self, points: list[tuple[float, float]], speed: float) -> None:
-        with self.lock:
-            if not self.device:
-                raise RuntimeError("Not connected")
-            self._halt_route()
-            self.stop.clear()
+        if not self.device:
+            raise RuntimeError("Not connected")
+        self._halt_route()
+        self.stop.clear()
+        path = route.route_points(points, max(speed, 0.3), dt=1.0)
 
-            def run():
-                def on_step(i, total, lat, lon):
-                    self.live = (lat, lon)
-                try:
-                    self.device.play_route(points, speed, self.stop, on_step=on_step)
-                except Exception:
-                    pass
+        def run():
+            for lat, lon in path:
+                if self.stop.is_set():
+                    return
+                if not self.push(lat, lon):
+                    return               # push() already started the reconnect
+                if self.stop.wait(1.0):
+                    return
 
-            self.route_thread = threading.Thread(target=run, daemon=True)
-            self.route_thread.start()
+        self.route_thread = threading.Thread(target=run, daemon=True)
+        self.route_thread.start()
 
     def stop_route(self) -> None:
         self.stop.set()
 
+    # ---- restore ----------------------------------------------------------
+
     def restore(self) -> None:
-        with self.lock:
-            self._halt_route()
-            if self.device:
-                self.device.clear()
-            self.live = self.home
+        self._halt_route()
+        dev = self.device
+        if dev:
+            try:
+                dev.clear()              # suspends in-flight fixes itself
+            except Exception as e:
+                self._session_lost(dev, e)
+                raise
+        self.spoof = None
+        self.live = self.home
+
+    # ---- liveness + auto-reconnect ----------------------------------------
+
+    def _start_monitor(self) -> None:
+        self._monitor_gen += 1
+        threading.Thread(target=self._monitor, args=(self._monitor_gen,),
+                         daemon=True).start()
+
+    def _monitor(self, gen: int) -> None:
+        misses = 0
+        last_beat = time.monotonic()
+        while gen == self._monitor_gen:
+            time.sleep(3.0)
+            dev = self.device
+            if dev is None or gen != self._monitor_gen:
+                return
+            st = core.link_status(dev.serial)
+            if st is None:
+                pass                     # transient usbmux hiccup: no information
+            elif st:
+                misses = 0
+                if st != self.link:
+                    self.link = dev.link = st
+            else:
+                misses += 1
+                if misses >= 2:          # ~6s gone: really unplugged, not a blip
+                    self._session_lost(dev, RuntimeError("the iPhone went away"))
+                    return
+            # usbmux visibility says nothing about whether the developer tunnel
+            # under it still works, so re-assert the spoof as a real round-trip
+            if time.monotonic() - last_beat >= self.HEARTBEAT_EVERY:
+                last_beat = time.monotonic()
+                spot = self.spoof
+                busy = bool(self.route_thread and self.route_thread.is_alive())
+                if spot and not busy and not self.push(spot[0], spot[1]):
+                    return
+
+    def _session_lost(self, dead, err: Exception) -> None:
+        if self.device is not dead:
+            return                       # someone else already handled it
+        core._log(f"phone server lost the session: {err!r}")
+        self.device = None
+        self.lost = True
+        self.link = ""
+        self._monitor_gen += 1
+        self.stop.set()
+        threading.Thread(target=lambda: dead.close(clear=False), daemon=True).start()
+        if self._reconnecting:
+            return
+        self._reconnecting = True
+        self._reconnect_gen += 1
+        threading.Thread(target=self._reconnect, args=(self._reconnect_gen,),
+                         daemon=True).start()
+
+    def _reconnect(self, gen: int) -> None:
+        deadline = time.monotonic() + self.RECONNECT_WINDOW
+        delay = 3.0
+        try:
+            while time.monotonic() < deadline and gen == self._reconnect_gen:
+                time.sleep(delay)
+                if gen != self._reconnect_gen:
+                    return
+                try:
+                    if self.connect().get("name"):
+                        core._log("phone server reconnected")
+                        spot = self.spoof
+                        if spot:
+                            self.push(spot[0], spot[1])   # put the spoof back
+                        return
+                except Exception:
+                    pass
+                delay = min(delay * 1.6, 20.0)
+            core._log("phone server gave up reconnecting")
+        finally:
+            if gen == self._reconnect_gen:
+                self._reconnecting = False
+
+    # ---- status -----------------------------------------------------------
 
     def status(self) -> dict:
         live = self.live
         return {
             "connected": self.device is not None,
+            "connecting": self._connecting,
+            "reconnecting": self._reconnecting,
+            "lost": self.lost and self.device is None,
             "name": self.name,
             "ios": self.ios,
+            "link": self.link,
             "dev_mode_needed": self.dev_mode_needed,
             "route_active": bool(self.route_thread and self.route_thread.is_alive()),
             "live": {"lat": live[0], "lon": live[1]} if live else None,
         }
+
+    def shutdown(self) -> None:
+        """Hand the phone back cleanly on SIGTERM (the desktop app terminates us
+        when you switch back to This Mac). clear=False, so the spoof survives the
+        hand-off exactly like every other teardown path."""
+        self._monitor_gen += 1
+        self._reconnect_gen += 1
+        self.stop.set()
+        dev, self.device = self.device, None
+        if dev:
+            try:
+                dev.close(clear=False)
+            except Exception:
+                pass
 
 
 state = State()
@@ -117,7 +296,7 @@ state = State()
 
 class Handler(BaseHTTPRequestHandler):
     def _ok(self, q) -> bool:
-        return q.get("t", [None])[0] == TOKEN
+        return hmac.compare_digest(q.get("t", [""])[0] or "", TOKEN)
 
     def _json(self, obj, code: int = 200) -> None:
         body = json.dumps(obj).encode()
@@ -133,7 +312,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         data = path.read_bytes()
         ctype = {".html": "text/html", ".js": "text/javascript",
-                 ".css": "text/css"}.get(path.suffix, "application/octet-stream")
+                 ".css": "text/css", ".map": "application/json"}.get(
+                     path.suffix, "application/octet-stream")
         self.send_response(200)
         self.send_header("Content-Type", ctype + "; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
@@ -156,7 +336,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/":
             self._file(WEB / "index.html")
             return
-        if u.path in ("/app.js", "/style.css"):
+        if u.path in STATIC:
             self._file(WEB / u.path.lstrip("/"))
             return
         if not self._ok(q):
@@ -166,12 +346,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(state.status())
         elif u.path == "/geocode":
             try:
-                lat, lon = core.geocode(q.get("q", [""])[0])
+                lat, lon = geo.geocode(q.get("q", [""])[0])
                 self._json({"lat": lat, "lon": lon})
             except Exception as e:
                 self._json({"error": str(e)}, 400)
         elif u.path == "/locate":
-            loc = core.my_location()
+            loc = state.home or geo.current_location()
             self._json({"lat": loc[0], "lon": loc[1]} if loc else {"error": "unknown"})
         else:
             self.send_error(404)
@@ -225,6 +405,18 @@ def _lan_ip() -> str:
 
 
 def main() -> None:
+    # The desktop app terminates us when you switch back to This Mac; hand the
+    # phone back cleanly instead of dying mid-session.
+    def _bye(signum, frame):
+        state.shutdown()
+        sys.exit(0)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _bye)
+        except (ValueError, OSError):
+            pass
+
     ip = _lan_ip()
     url = f"http://{ip}:{PORT}/?t={TOKEN}"
     print("\n  Spoofr, open this in Safari on your iPhone")

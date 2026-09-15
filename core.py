@@ -1,8 +1,14 @@
-"""Spoofr, device control, the privileged tunnel, route math.
+"""Spoofr, device control and the privileged tunnel.
 
-pymobiledevice3 9.x is fully async; Tkinter is sync. Every coroutine runs on one
-persistent background loop and the caller blocks until it finishes, so the GUI
-never touches asyncio.
+Purely the device engine: nothing here knows about maps, routes or geocoding
+(qtui/route.py and qtui/geo.py own those, so editing a route never drags in
+pymobiledevice3).
+
+pymobiledevice3 9.x is fully async; the UI is not. Every coroutine runs on one
+persistent background loop and the caller blocks until it finishes, so no
+front-end ever touches asyncio. Every one of those waits is bounded: an
+unbounded device call parks its caller while holding Device._lock, which used to
+freeze Restore GPS, the panic hotkey and app quit along with it.
 
 The RSD tunnel to an iOS 17+ device can only be created by a root process, so
 the app is launched with sudo. connect() then starts and supervises
@@ -33,8 +39,6 @@ for _brew in ("/opt/homebrew/bin", "/usr/local/bin"):
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + _brew
 
 import asyncio
-import math
-import random
 import shutil
 import socket
 import subprocess
@@ -60,7 +64,6 @@ from pymobiledevice3.services.mobile_image_mounter import auto_mount_personalize
 from pymobiledevice3.tunneld.api import TUNNELD_DEFAULT_ADDRESS, get_tunneld_devices
 from pymobiledevice3.usbmux import list_devices
 
-EARTH_RADIUS_M = 6_371_000.0
 TUNNELD_LOG = Path("/tmp/spoofer-tunneld.log")
 LOG_PATH = Path.home() / ".spoofr" / "spoofr.log"
 LOG_MAX_BYTES = 1_000_000
@@ -221,67 +224,6 @@ def _log(msg: str, exc: bool = False) -> None:
         pass
 
 
-def geocode(query: str) -> tuple[float, float]:
-    """Look up an address or city → (lat, lon). Raises SpooferError if not found.
-
-    ArcGIS first (works without a key); OpenStreetMap as a fallback. Blocking,
-    call from a worker thread.
-    """
-    import geocoder
-    for provider in (geocoder.arcgis, geocoder.osm):
-        try:
-            result = provider(query)
-        except Exception:
-            continue
-        if result.ok and result.latlng:
-            return result.latlng[0], result.latlng[1]
-    raise SpooferError(f"Couldn’t find “{query}”. Try a more specific address or city.")
-
-
-def suggest(query: str, limit: int = 6) -> list[dict]:
-    """Autocomplete a place/address/city → up to ``limit`` candidates, each a dict
-    {label, secondary, lat, lon}. Uses Photon (free, no key). Blocking, call from a
-    worker thread. Returns [] on any error."""
-    import requests
-    try:
-        r = requests.get("https://photon.komoot.io/api/",
-                         params={"q": query, "limit": limit, "lang": "en"},
-                         headers={"User-Agent": "Spoofr/1.0 (macOS location utility)"}, timeout=4)
-        feats = r.json().get("features", [])
-    except Exception:
-        return []
-    out: list[dict] = []
-    for f in feats:
-        p = f.get("properties", {})
-        coords = (f.get("geometry") or {}).get("coordinates")
-        if not coords or len(coords) < 2:
-            continue
-        name = p.get("name") or p.get("street") or p.get("city") or ""
-        parts = [p.get(k) for k in ("street", "city", "state", "country")
-                 if p.get(k) and p.get(k) != name]
-        secondary = ", ".join(dict.fromkeys(parts))   # de-dupe, keep order
-        if not name:
-            name = secondary or "—"
-        out.append({"label": name, "secondary": secondary,
-                    "lat": float(coords[1]), "lon": float(coords[0])})
-    return out
-
-
-def my_location() -> Optional[tuple[float, float]]:
-    """Approximate current location from this Mac's public IP (city-level).
-
-    Returns None if it can't be determined. Blocking, call from a worker thread.
-    """
-    import geocoder
-    try:
-        g = geocoder.ip("me")
-        if g.ok and g.latlng:
-            return g.latlng[0], g.latlng[1]
-    except Exception:
-        pass
-    return None
-
-
 # --- a live spoofing session --------------------------------------------
 
 @dataclass
@@ -328,7 +270,7 @@ class Device:
 
     def _acquire(self, what: str):
         if not self._lock.acquire(timeout=LOCK_TIMEOUT):
-            raise SpooferError(f"The iPhone is busy and didn\u2019t free up (while trying to {what}).")
+            raise SpooferError(f"The iPhone is busy and didn’t free up (while trying to {what}).")
 
     def set(self, lat: float, lon: float) -> None:
         """Place the iPhone at (lat, lon).
@@ -401,33 +343,6 @@ class Device:
         finally:
             self._lock.release()
 
-    def play_route(self, points, speed_mps, stop: threading.Event,
-                   dt: float = 1.0, on_step: Optional[Callable] = None,
-                   loop: bool = False, bounce: bool = False) -> None:
-        """Walk `points` at speed_mps, one fix every `dt` seconds.
-
-        With `bounce` the path is walked forward then back; with `loop` (or
-        `bounce`) it repeats until `stop` is set, otherwise it returns at the
-        end. Call from a worker thread, it sleeps between fixes.
-        """
-        path = route_points(points, speed_mps, dt)
-        if not path:
-            return
-        seq = path + path[-2::-1] if bounce else path   # forward, then back
-        repeat = loop or bounce
-        total = len(seq)
-        while True:
-            for i, (lat, lon) in enumerate(seq, 1):
-                if stop.is_set():
-                    return
-                self.set(lat, lon)
-                if on_step:
-                    on_step(i, total, lat, lon)
-                if stop.wait(dt):
-                    return
-            if not repeat:
-                return
-
     def close(self, clear: bool = True) -> None:
         """Tear down the DVT/location session + tunnel. With clear=False the
         simulated location is LEFT ACTIVE on the iPhone (it persists until the user
@@ -470,25 +385,6 @@ def connect(on_status: Optional[StatusFn] = None) -> Device:
     say("Starting the tunnel…")
     _tunneld.ensure()
     return _loop.run(_open(say))
-
-
-def device_present(serial: str) -> bool:
-    """True if the iPhone with this usbmux serial is still connected (USB/Wi-Fi).
-    Used to notice an unplug. Blocking, call from a worker thread."""
-    if not serial:
-        return True
-    try:
-        return _loop.run(_device_present(serial))
-    except Exception:
-        return False
-
-
-async def _device_present(serial: str) -> bool:
-    try:
-        devices = await list_devices()
-    except Exception:
-        return True      # transient usbmux hiccup, don't declare a disconnect
-    return any(getattr(d, "serial", None) == serial for d in devices)
 
 
 def _kinds_to_link(kinds: set[str]) -> str:
@@ -740,109 +636,3 @@ async def _close_quietly(rsd) -> None:
         await rsd.close()
     except Exception:
         pass
-
-
-# --- route math ----------------------------------------------------------
-
-def _meters(a, b) -> float:
-    """Great-circle distance between two (lat, lon) points, in metres."""
-    lat1, lon1, lat2, lon2 = map(math.radians, (*a, *b))
-    h = (math.sin((lat2 - lat1) / 2) ** 2
-         + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2)
-    return 2 * EARTH_RADIUS_M * math.asin(math.sqrt(h))
-
-
-def route_points(points, speed_mps: float, dt: float = 1.0):
-    """Fixes to emit so the polyline is walked at `speed_mps`, one per `dt` seconds.
-
-    Straight-line interpolation between waypoints: over the distances anyone
-    actually walks or drives, the gap to a true great-circle path is far below
-    GPS noise, and the code stays trivially correct.
-    """
-    if speed_mps <= 0 or dt <= 0:
-        raise ValueError("speed_mps and dt must be positive")
-    if len(points) < 2:
-        return list(points)
-
-    step = speed_mps * dt
-    path = [tuple(points[0])]
-    for a, b in zip(points, points[1:]):
-        steps = max(1, math.ceil(_meters(a, b) / step))
-        for i in range(1, steps + 1):
-            if i == steps:
-                path.append(tuple(b))  # land exactly on the waypoint
-            else:
-                f = i / steps
-                path.append((a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f))
-    return path
-
-
-def jitter(lat: float, lon: float, radius_m: float = 4.0) -> tuple[float, float]:
-    """Nudge a point by a random offset within `radius_m` metres, so a held
-    position wobbles like a real GPS fix instead of sitting perfectly still."""
-    r = radius_m * math.sqrt(random.random())          # uniform over the disc
-    theta = random.uniform(0.0, 2.0 * math.pi)
-    dlat = (r * math.cos(theta)) / 111_320.0
-    dlon = (r * math.sin(theta)) / (111_320.0 * max(0.15, math.cos(math.radians(lat))))
-    return lat + dlat, lon + dlon
-
-
-def snap_to_roads(points, profile: str = "driving", timeout: float = 8.0):
-    """Replace the straight segments between waypoints with the real road
-    geometry (OSRM public server). Returns the densified [(lat,lon),…]; on any
-    failure returns `points` unchanged so routing still works. Blocking, call
-    from a worker thread."""
-    pts = [tuple(p) for p in points]
-    if len(pts) < 2:
-        return pts
-    import requests
-    coords = ";".join(f"{lon},{lat}" for lat, lon in pts)
-    url = f"https://router.project-osrm.org/route/v1/{profile}/{coords}"
-    try:
-        r = requests.get(url, params={"overview": "full", "geometries": "geojson"},
-                         headers={"User-Agent": "Spoofr/1.0 (macOS location utility)"},
-                         timeout=timeout)
-        data = r.json()
-        if data.get("code") == "Ok" and data.get("routes"):
-            geo = data["routes"][0]["geometry"]["coordinates"]   # [lon, lat]
-            snapped = [(c[1], c[0]) for c in geo if len(c) >= 2]
-            if len(snapped) >= 2:
-                return snapped
-    except Exception:
-        pass
-    return pts
-
-
-def parse_gpx(path: str):
-    """Read a .gpx file → [(lat,lon),…] from its first track (else route, else
-    waypoints). Raises SpooferError if there's nothing usable."""
-    import gpxpy
-    with open(path, "r", encoding="utf-8") as fh:
-        gpx = gpxpy.parse(fh)
-    pts: list[tuple[float, float]] = []
-    for trk in gpx.tracks:
-        for seg in trk.segments:
-            pts += [(p.latitude, p.longitude) for p in seg.points]
-    if not pts:
-        for rte in gpx.routes:
-            pts += [(p.latitude, p.longitude) for p in rte.points]
-    if not pts:
-        pts += [(w.latitude, w.longitude) for w in gpx.waypoints]
-    if len(pts) < 2:
-        raise SpooferError("That GPX file has no usable track (need at least two points).")
-    return pts
-
-
-def build_gpx(points, name: str = "Spoofr route") -> str:
-    """Serialize [(lat,lon),…] to a GPX 1.1 XML string (one track)."""
-    import gpxpy
-    import gpxpy.gpx
-    gpx = gpxpy.gpx.GPX()
-    gpx.creator = "Spoofr"
-    trk = gpxpy.gpx.GPXTrack(name=name)
-    gpx.tracks.append(trk)
-    seg = gpxpy.gpx.GPXTrackSegment()
-    trk.segments.append(seg)
-    for lat, lon in points:
-        seg.points.append(gpxpy.gpx.GPXTrackPoint(latitude=lat, longitude=lon))
-    return gpx.to_xml()

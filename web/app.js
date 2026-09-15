@@ -86,23 +86,56 @@ document.querySelectorAll("#seg button").forEach(b => b.onclick = () => {
 });
 
 let connecting = false, wizardOpen = false;
-async function doConnect() {
-  if (connecting || connected || wizardOpen) return;
+const RETRY_MIN = 5000, RETRY_MAX = 30000;
+let retryDelay = RETRY_MIN, retryTimer = null;
+
+const connectedText = (s) =>
+  `Connected · ${s.name} · iOS ${s.ios}` + (s.link ? ` · ${s.link}` : "");
+
+async function doConnect(fromWizard) {
+  if (connecting || connected) return;
+  if (wizardOpen && !fromWizard) return;
   connecting = true;
   setStatus("Connecting…", "amber");
   try {
     const r = await post("/connect");
+    if (r.connecting) return;                 // the Mac is already working on one
     if (r.dev_mode_needed) showWizard();
     else if (r.error) { setStatus("Not connected", "red"); hint(r.error); }
-    else if (r.name) { connected = true; setStatus(`Connected · ${r.name} · iOS ${r.ios}`, "green"); }
+    else if (r.name) {
+      connected = true;
+      retryDelay = RETRY_MIN;
+      setStatus(connectedText(r), "green");
+      if (wizardOpen) wizardSucceeded();
+    }
   } catch (e) {
     setStatus("Not connected", "red"); hint("Can’t reach the Mac, is the server still running?");
   } finally {
     connecting = false;
   }
 }
-$("connect").onclick = doConnect;
-$("restore").onclick = async () => { await post("/restore"); clearPin(); hint("Real GPS restored. iOS reacquires in a few seconds."); };
+
+// Keep trying until the iPhone is reachable, but back off. Every attempt is a
+// full connect on the Mac, and a flat 5s retry (plus the wizard's own 2.5s one)
+// just stacked requests behind the connect that was already running.
+function scheduleRetry() {
+  clearTimeout(retryTimer);
+  retryTimer = setTimeout(async () => {
+    if (!connected && !connecting) {
+      await doConnect();
+      if (!connected) retryDelay = Math.min(retryDelay * 1.6, RETRY_MAX);
+    }
+    scheduleRetry();
+  }, retryDelay);
+}
+
+$("connect").onclick = () => doConnect();
+$("restore").onclick = async () => {
+  const r = await post("/restore");
+  clearPin();
+  hint(r && r.error ? "Restore failed: " + r.error
+                    : "Real GPS restored. iOS reacquires in a few seconds.");
+};
 
 $("setbtn").onclick = async () => {
   if (!pending) return;
@@ -147,14 +180,17 @@ async function poll() {
   try {
     const s = await getj("/status");
     connected = s.connected;
-    if (s.connected) setStatus(`Connected · ${s.name} · iOS ${s.ios}`, "green");
+    if (s.connected) { setStatus(connectedText(s), "green"); retryDelay = RETRY_MIN; }
+    else if (s.reconnecting) setStatus("Reconnecting…", "amber");
+    else if (s.connecting) setStatus("Connecting…", "amber");
+    else if (s.lost) setStatus("Lost the iPhone", "red");
     if (s.live) setLive(s.live.lon, s.live.lat);
   } catch (e) { /* server unreachable; keep last state */ }
 }
 setInterval(poll, 1200);
 poll();
-doConnect();                                                              // auto-connect on load
-setInterval(() => { if (!connected && !connecting) doConnect(); }, 5000);  // keep trying until the iPhone is reachable
+doConnect();          // auto-connect on load
+scheduleRetry();      // and keep trying, with a growing gap
 
 // initial: center on approximate location
 getj("/locate").then(r => { if (r.lat) map.flyTo({ center: [r.lon, r.lat], zoom: 12 }); }).catch(() => {});
@@ -167,15 +203,15 @@ function showWizard() {
   wizardOpen = true;
   $("wizard").classList.remove("hidden");
   post("/devmode/reveal");
-  wizTimer = setInterval(async () => {
-    const r = await post("/connect");           // succeeds once Developer Mode is on
-    if (r && r.name) {
-      connected = true;
-      $("wiz-status").textContent = "✓  Developer Mode on, connecting…";
-      $("wiz-status").style.color = "var(--green)";
-      setTimeout(closeWizard, 900);
-    }
-  }, 2500);
+  // through the same guarded connect, so the wizard's poll can't stack full
+  // connects on top of the retry loop's
+  wizTimer = setInterval(() => doConnect(true), 2500);
+}
+
+function wizardSucceeded() {
+  $("wiz-status").textContent = "✓  Developer Mode on, connecting…";
+  $("wiz-status").style.color = "var(--green)";
+  setTimeout(closeWizard, 900);
 }
 function closeWizard() { wizardOpen = false; clearInterval(wizTimer); $("wizard").classList.add("hidden"); }
 $("wiz-cancel").onclick = closeWizard;

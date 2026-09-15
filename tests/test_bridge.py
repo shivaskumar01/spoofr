@@ -15,7 +15,7 @@ from qtui.bridge import DeviceBridge
 
 class FakeDevice:
     def __init__(self, error=None):
-        self.error, self.sets, self.suspends = error, [], 0
+        self.error, self.sets, self.suspends, self.cleared = error, [], 0, 0
         self.serial, self.link, self.name, self.ios = "abc123", "USB", "iPhone", "18.0"
 
     def set(self, lat, lon):
@@ -23,11 +23,18 @@ class FakeDevice:
             raise self.error
         self.sets.append((lat, lon))
 
+    def clear(self):
+        if self.error:
+            raise self.error
+        self.cleared += 1
+
     def suspend(self):
         self.suspends += 1
 
+    closed_with_clear = None
+
     def close(self, clear=True):
-        pass
+        self.closed_with_clear = clear
 
 
 @pytest.fixture

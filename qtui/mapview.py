@@ -615,8 +615,8 @@ class MapPanel(QFrame):
                     # read the device through the bridge every fix, so a reconnect
                     # swaps it cleanly instead of us writing to a dead session
                     if not self.bridge.push(lat, lon):
-                        self._routeDone.emit("Lost the iPhone, reconnecting\u2026 "
-                                             "press Start again once it\u2019s back.")
+                        self._routeDone.emit("Lost the iPhone, reconnecting… "
+                                             "press Start again once it’s back.")
                         return
                     self._walkStep.emit(lat, lon)
                     self.hint.emit(f"{self._transport}…  {i}/{total}   ({lat:.5f}, {lon:.5f})")
