@@ -470,6 +470,8 @@ def app_icon() -> QIcon:
 
 
 def main():
+    import applog
+    applog.install_hooks()      # a dying worker thread must not vanish silently
     QApplication.setApplicationName("Spoofr")
     QApplication.setOrganizationName("Spoofr")
     QApplication.setApplicationDisplayName("Spoofr")

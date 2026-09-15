@@ -23,5 +23,5 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["core", "host", "macui", "portable", "server", "spoofr_app"]
+py-modules = ["applog", "core", "host", "macui", "portable", "server", "spoofr_app"]
 packages = ["qtui"]

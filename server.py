@@ -405,6 +405,9 @@ def _lan_ip() -> str:
 
 
 def main() -> None:
+    import applog
+    applog.install_hooks()
+
     # The desktop app terminates us when you switch back to This Mac; hand the
     # phone back cleanly instead of dying mid-session.
     def _bye(signum, frame):

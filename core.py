@@ -51,6 +51,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from applog import log as _log
+
 from pymobiledevice3.exceptions import (
     AlreadyMountedError,
     DeveloperModeIsNotEnabledError,
@@ -65,8 +67,6 @@ from pymobiledevice3.tunneld.api import TUNNELD_DEFAULT_ADDRESS, get_tunneld_dev
 from pymobiledevice3.usbmux import list_devices
 
 TUNNELD_LOG = Path("/tmp/spoofer-tunneld.log")
-LOG_PATH = Path.home() / ".spoofr" / "spoofr.log"
-LOG_MAX_BYTES = 1_000_000
 
 # Every device round-trip is bounded. Without these a single wedged call blocks
 # its caller forever *while holding Device._lock*, which freezes Restore GPS, the
@@ -199,29 +199,6 @@ def _tail(path: Path, lines: int = 6) -> str:
         return "\n".join(path.read_text().splitlines()[-lines:]) or "(no output)"
     except OSError:
         return "(no output)"
-
-
-def _log(msg: str, exc: bool = False) -> None:
-    """Append a diagnostic line (and optional traceback) to ~/.spoofr/spoofr.log.
-
-    Rotates at LOG_MAX_BYTES so an app left running for weeks can't fill the disk.
-    """
-    try:
-        import datetime
-        import traceback
-        p = LOG_PATH
-        p.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            if p.stat().st_size > LOG_MAX_BYTES:
-                p.replace(p.with_suffix(".log.1"))
-        except OSError:
-            pass
-        with p.open("a") as f:
-            f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')}  {msg}\n")
-            if exc:
-                f.write(traceback.format_exc())
-    except Exception:
-        pass
 
 
 # --- a live spoofing session --------------------------------------------

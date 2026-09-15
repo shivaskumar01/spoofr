@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from . import theme
 
 TILE = 256
+MAX_TILE_ATTEMPTS = 3     # give up re-requesting a tile that keeps erroring
 DEFAULT_TILES = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
 SUBDOMAINS = ("a", "b", "c")
 
@@ -111,7 +112,10 @@ class TileMap(QGraphicsView):
         self._nam.finished.connect(self._on_tile)
         self._tiles: dict[tuple[int, int, int], QGraphicsPixmapItem] = {}
         self._inflight: dict[tuple[int, int, int], QNetworkReply] = {}
-        self._failed: set[tuple[int, int, int]] = set()   # re-request on next layout
+        # tile -> failed attempts. A layout pass runs on every pan/zoom frame, so
+        # retrying unconditionally meant a tile the server won't serve was
+        # re-requested forever; cap it and keep the rescaled placeholder instead.
+        self._failed: dict[tuple[int, int, int], int] = {}
 
         self._points: list[_PointOverlay] = []
         self._paths: list[_PathOverlay] = []
@@ -348,9 +352,8 @@ class TileMap(QGraphicsView):
                 if key not in self._tiles:
                     self._make_tile(key)
                     fresh.append(key)
-                elif key in self._failed:      # earlier fetch errored, try again
-                    self._failed.discard(key)
-                    self._request(key)
+                elif 0 < self._failed.get(key, 0) < MAX_TILE_ATTEMPTS:
+                    self._request(key)             # earlier fetch errored, try again
         # seed brand-new tiles with imagery rescaled from the level we're leaving,
         # BEFORE that level is pruned, zooming never blanks to the background
         for key in fresh:
@@ -361,7 +364,7 @@ class TileMap(QGraphicsView):
         for key in list(self._tiles):
             if key not in needed:
                 self._scene.removeItem(self._tiles.pop(key))
-                self._failed.discard(key)
+                self._failed.pop(key, None)
                 reply = self._inflight.pop(key, None)
                 if reply is not None:
                     reply.abort()   # stop wasting the connection pool on it
@@ -447,11 +450,12 @@ class TileMap(QGraphicsView):
                     item = self._tiles.get(key)
                     if item is not None:
                         item.setPixmap(pix)
+                        self._failed.pop(key, None)
             elif err != QNetworkReply.NetworkError.OperationCanceledError:
-                # failed (offline blip / HTTP error / timeout): mark it so the
-                # next layout pass re-requests instead of leaving a hole forever
+                # failed (offline blip / HTTP error / timeout): count it so the
+                # next layout pass retries, up to MAX_TILE_ATTEMPTS
                 if key in self._tiles:
-                    self._failed.add(key)
+                    self._failed[key] = self._failed.get(key, 0) + 1
         finally:
             reply.deleteLater()
 

@@ -17,7 +17,7 @@ for _c in (glob.glob('/opt/homebrew/Caskroom/ipsw/*/ipsw')
         binaries.append((_c, 'bin'))
         break
 
-hiddenimports = ['core', 'portable', 'server', 'macui', 'pymobiledevice3.__main__',
+hiddenimports = ['applog', 'core', 'portable', 'server', 'macui', 'pymobiledevice3.__main__',
                  'CoreLocation', 'Foundation', 'AppKit', 'objc', 'segno', 'requests']
 hiddenimports += collect_submodules('qtui')
 hiddenimports += collect_submodules('pymobiledevice3')
