@@ -38,10 +38,14 @@ class DeviceBridge(QObject):
     wirelessResult = Signal(bool, str)       # one-time wireless enable: ok, message
 
     RECONNECT_WINDOW = 120.0                 # seconds to keep trying before giving up
+    HEARTBEAT_EVERY = 15.0                   # s between channel-liveness re-asserts
 
     def __init__(self):
         super().__init__()
         self.device: core.Device | None = None
+        # returns the fix the monitor may re-assert to prove the channel is alive,
+        # or None when nothing is spoofed / something else is already writing
+        self.heartbeat_source = None
         self._connecting = False
         self._monitor_on = False
         self._monitor_gen = 0    # invalidates old monitor threads across reconnects
@@ -70,6 +74,7 @@ class DeviceBridge(QObject):
             portable.ensure_tunnel()   # brings up the Wi-Fi tunnel (one admin prompt)
             device = core.connect(on_status=lambda m: self.status.emit(m, theme.AMBER))
             self.device = device
+            core._log(f"connected: {device.name} iOS {device.ios} via {device.link}")
             self._emit_connected_status(device)
             self.connected.emit(device)
             self._start_monitor()
@@ -77,6 +82,7 @@ class DeviceBridge(QObject):
             self.status.emit("Developer Mode needed", theme.AMBER)
             self.devModeRequired.emit()
         except Exception as e:
+            core._log(f"connect failed: {e!r}")
             self.status.emit("Not connected", theme.RED)
             self.failed.emit(str(e))
         finally:
@@ -88,25 +94,53 @@ class DeviceBridge(QObject):
 
     # ---- set / restore --------------------------------------------------
 
-    def set_location(self, lat: float, lon: float):
+    def push(self, lat: float, lon: float, quiet: bool = False) -> bool:
+        """The one write path to the phone: teleport, walk, route, jitter, heartbeat.
+
+        core.Device.set has already rebuilt the DVT channel and retried once, so an
+        exception arriving here means the session itself is gone (e.g. the cable was
+        pulled and the tunnel went with it). Report it and rebuild in the background
+        rather than letting a caller swallow it and keep animating a map that no
+        longer matches the phone.
+
+        Returns True only if the fix actually landed on the device.
+        """
+        import core
         dev = self.device
-        if not dev:
+        if dev is None:
+            return False
+        try:
+            dev.set(lat, lon)
+            return True
+        except core.Cancelled:
+            return False              # a Restore/stop overtook it: not a failure
+        except Exception as e:
+            core._log(f"push failed, session is gone: {e!r}")
+            if not quiet:
+                self.hint.emit(f"Lost the iPhone: {e}")
+            if self.device is dev:
+                self._begin_reconnect(dev)
+            return False
+
+    def suspend(self):
+        """Invalidate in-flight fixes so nothing lands after a stop or a Restore."""
+        dev = self.device
+        if dev is not None:
+            try:
+                dev.suspend()
+            except Exception:
+                pass
+
+    def set_location(self, lat: float, lon: float):
+        if not self.device:
             self.hint.emit("Connect to your iPhone first.")
             return
         self.hint.emit(f"Setting location to {lat:.5f}, {lon:.5f}…")
 
         def work():
-            try:
-                dev.set(lat, lon)
+            if self.push(lat, lon):
                 self.located.emit(lat, lon)
                 self.hint.emit(f"Location set to {lat:.5f}, {lon:.5f}")
-            except Exception as e:
-                self.hint.emit(f"Failed: {e}")
-                # core already rebuilt the DVT channel and retried, so the whole
-                # session/tunnel is dead (e.g. the cable was pulled and the old
-                # tunnel went with it), rebuild the session in the background
-                if self.device is dev:
-                    self._begin_reconnect(dev)
         threading.Thread(target=work, daemon=True).start()
 
     def restore(self, panic: bool = False):
@@ -116,13 +150,18 @@ class DeviceBridge(QObject):
             return
 
         def work():
+            import core
             try:
-                dev.clear()
+                dev.clear()            # suspends in-flight fixes itself
                 self.restored.emit()
                 tag = " (panic)" if panic else ""
                 self.hint.emit(f"Real GPS restored{tag}. iOS reacquires in a few seconds.")
+                core._log(f"real GPS restored{tag}")
             except Exception as e:
+                core._log(f"restore failed: {e!r}")
                 self.hint.emit(f"Restore failed: {e}")
+                if self.device is dev:
+                    self._begin_reconnect(dev)
         threading.Thread(target=work, daemon=True).start()
 
     def locate(self):
@@ -149,9 +188,23 @@ class DeviceBridge(QObject):
                          daemon=True).start()
 
     def _monitor_worker(self, gen: int):
+        """Watch the session two ways.
+
+        usbmux visibility catches an unplug, but it says nothing about whether the
+        developer tunnel under it still works: when the RSD tunnel dies with the
+        phone still plugged in, every set() fails while the pill stays green
+        forever (~/.spoofr/spoofr.log, 2026-06-03). So we also re-assert the active
+        spoof every HEARTBEAT_EVERY seconds, which is a real round-trip over the
+        channel we actually depend on, and keeps the fix fresh on the phone.
+
+        When nothing is spoofed there is no safe probe (a write would spoof a user
+        who is on real GPS), so that case relies on the next user action failing
+        fast — which core's timeouts cap at a few seconds.
+        """
         import time
         import core
         misses = 0
+        last_beat = time.monotonic()
         while self._monitor_on and gen == self._monitor_gen:
             time.sleep(3.0)
             dev = self.device
@@ -164,14 +217,31 @@ class DeviceBridge(QObject):
                 misses = 0
                 if st != dev.link:          # e.g. cable pulled with wireless on
                     dev.link = st
+                    core._log(f"link changed to {st}")
                     self._emit_connected_status(dev)
             else:
                 misses += 1
                 if misses >= 2:             # ~6s gone → really unplugged (not a blip)
                     if gen != self._monitor_gen:
                         return
+                    core._log("iPhone vanished from usbmux; reconnecting")
                     self._begin_reconnect(dev)   # spoof stays on; try to get it back
                     return
+            if time.monotonic() - last_beat >= self.HEARTBEAT_EVERY:
+                last_beat = time.monotonic()
+                point = self._heartbeat_point()
+                if point is not None and not self.push(point[0], point[1], quiet=True):
+                    self.hint.emit("Lost the connection to your iPhone, reconnecting…")
+                    return                  # push() already kicked off the reconnect
+
+    def _heartbeat_point(self):
+        src = self.heartbeat_source
+        if src is None:
+            return None
+        try:
+            return src()
+        except Exception:
+            return None
 
     # ---- auto-reconnect (wireless drops, unplug→Wi-Fi handoff, replug) ----
 
@@ -221,6 +291,7 @@ class DeviceBridge(QObject):
                 break
             attempt += 1
             self.reconnecting.emit(attempt)
+            core._log(f"reconnect attempt {attempt}")
             try:
                 device = core.connect(on_status=lambda m: self.status.emit(m, theme.AMBER))
                 if cancelled():          # user clicked Stop mid-attempt
@@ -229,6 +300,7 @@ class DeviceBridge(QObject):
                     return
                 self._reconnecting = False
                 self.device = device
+                core._log(f"reconnected after {attempt} attempt(s) via {device.link}")
                 self._emit_connected_status(device)
                 self.connected.emit(device)
                 self._start_monitor()
@@ -247,6 +319,7 @@ class DeviceBridge(QObject):
         if cancelled():
             return
         self._reconnecting = False
+        core._log(f"gave up reconnecting after {attempt} attempt(s)")
         self.deviceLost.emit()
 
     # ---- idle pre-flight: is an iPhone visible before Connect? -----------
@@ -303,26 +376,41 @@ class DeviceBridge(QObject):
 
     def drop_device(self):
         """Release the device session (hand off to the phone) but leave the
-        Wi-Fi tunnel up, so iPhone mode can reuse it."""
+        Wi-Fi tunnel up, so iPhone mode can reuse it.
+
+        clear=False like every other teardown: handing control to the phone must
+        not silently restore real GPS, and the persisted active_spoof has to stay
+        true to what the device is actually set to."""
         self._stop_auto()
         dev, self.device = self.device, None
         if dev:
-            threading.Thread(target=dev.close, daemon=True).start()
+            threading.Thread(target=lambda: dev.close(clear=False), daemon=True).start()
+
+    CLOSE_JOIN = 2.5                 # seconds to wait for teardown before quitting anyway
 
     def close(self):
         """Tear the session + tunnel down on app exit. Leaves the spoof active on
-        the iPhone (clear=False) so it persists between runs."""
+        the iPhone (clear=False) so it persists between runs.
+
+        Runs off the GUI thread with a bounded join: a device that stopped
+        answering must never make the app unquittable."""
         self._stop_auto()
         self.stop_visibility()
         dev, self.device = self.device, None
-        if dev:
-            try:
-                dev.close(clear=False)
-            except Exception:
-                pass
-        import sys
-        if "core" in sys.modules:        # only if we actually connected this run
-            try:
-                sys.modules["core"].cleanup()
-            except Exception:
-                pass
+
+        def teardown():
+            if dev:
+                try:
+                    dev.close(clear=False)
+                except Exception:
+                    pass
+            import sys
+            if "core" in sys.modules:    # only if we actually connected this run
+                try:
+                    sys.modules["core"].cleanup()
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=teardown, daemon=True)
+        t.start()
+        t.join(self.CLOSE_JOIN)

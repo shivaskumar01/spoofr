@@ -127,6 +127,8 @@ class MainWindow(QWidget):
         self.sidebar.exportGpx.connect(self.panel.export_gpx)
         self.panel.requestTeleport.connect(lambda: self.controlbar.set_mode("Teleport"))
         self.bridge.currentLocation.connect(self.panel.locate_me)
+        # the liveness monitor re-asserts this fix to prove the channel still works
+        self.bridge.heartbeat_source = self.panel.heartbeat_point
         self.controlbar.appModeChanged.connect(self._on_app_mode)
         self.portable.qrReady.connect(self._on_qr_ready)
         self.portable.statusUpdate.connect(self._on_portable_status)
@@ -314,9 +316,11 @@ class MainWindow(QWidget):
 
     def _on_app_mode(self, mode: str):
         if mode == "iphone":
-            self.panel.stop_route()
+            self.panel.stop_motion()
+            self.panel.persist_spoof()         # remember it before we let go of the device
             self.panel.show_walk_pad(False)
             self.bridge.drop_device()          # hand the device to the phone; keep the tunnel
+            self.panel.clear_all()             # the Mac no longer owns this fix
             self._set_connect_state("connect")
             self.connect_btn.setEnabled(False)
             self.restore_btn.setEnabled(False)

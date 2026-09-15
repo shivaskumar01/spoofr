@@ -40,6 +40,8 @@ import socket
 import subprocess
 import threading
 import time
+from concurrent.futures import CancelledError
+from concurrent.futures import TimeoutError as _FutureTimeout
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +62,17 @@ from pymobiledevice3.usbmux import list_devices
 
 EARTH_RADIUS_M = 6_371_000.0
 TUNNELD_LOG = Path("/tmp/spoofer-tunneld.log")
+LOG_PATH = Path.home() / ".spoofr" / "spoofr.log"
+LOG_MAX_BYTES = 1_000_000
+
+# Every device round-trip is bounded. Without these a single wedged call blocks
+# its caller forever *while holding Device._lock*, which freezes Restore GPS, the
+# panic hotkey and app quit along with it (see ~/.spoofr/spoofr.log, 2026-06-03).
+SET_TIMEOUT = 6.0        # one LocationSimulation.set round-trip
+CLEAR_TIMEOUT = 8.0      # clearing the spoof: worth waiting a little longer
+REOPEN_TIMEOUT = 12.0    # rebuilding the DVT + location channels
+CLOSE_TIMEOUT = 5.0      # tearing the session down on disconnect/quit
+LOCK_TIMEOUT = 30.0      # ceiling on waiting for another caller's device op
 
 StatusFn = Callable[[str], None]
 
@@ -73,6 +86,12 @@ class DeveloperModeRequired(SpooferError):
     rather than show a plain error."""
 
 
+class Cancelled(SpooferError):
+    """A device call was cut short by ``Device.suspend()`` — a Restore GPS or a
+    stop overtook it. Not a session failure: the caller should simply stop, not
+    reconnect."""
+
+
 # --- one background event loop for all device I/O ------------------------
 
 class _Loop:
@@ -83,8 +102,24 @@ class _Loop:
         threading.Thread(target=self._loop.run_forever, name="spoofer-loop",
                          daemon=True).start()
 
-    def run(self, coro):
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+    def submit(self, coro):
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    def wait(self, fut, timeout: Optional[float] = None):
+        """Block on `fut`; on expiry cancel the coroutine and raise, so no caller
+        can be stuck behind a device that stopped answering."""
+        try:
+            return fut.result(timeout)
+        except _FutureTimeout:
+            if fut.done():          # the coroutine itself raised a TimeoutError
+                raise
+            fut.cancel()
+            raise SpooferError("The iPhone stopped responding.") from None
+        except CancelledError:
+            raise Cancelled("The device call was cancelled.") from None
+
+    def run(self, coro, timeout: Optional[float] = None):
+        return self.wait(self.submit(coro), timeout)
 
 
 _loop = _Loop()
@@ -164,12 +199,20 @@ def _tail(path: Path, lines: int = 6) -> str:
 
 
 def _log(msg: str, exc: bool = False) -> None:
-    """Append a diagnostic line (and optional traceback) to ~/.spoofr/spoofr.log."""
+    """Append a diagnostic line (and optional traceback) to ~/.spoofr/spoofr.log.
+
+    Rotates at LOG_MAX_BYTES so an app left running for weeks can't fill the disk.
+    """
     try:
         import datetime
         import traceback
-        p = Path.home() / ".spoofr" / "spoofr.log"
+        p = LOG_PATH
         p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if p.stat().st_size > LOG_MAX_BYTES:
+                p.replace(p.with_suffix(".log.1"))
+        except OSError:
+            pass
         with p.open("a") as f:
             f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')}  {msg}\n")
             if exc:
@@ -253,6 +296,39 @@ class Device:
     link: str = "USB"              # how the phone is visible: "USB" / "Wi-Fi" / "USB + Wi-Fi"
     wireless_on: bool = False      # EnableWifiConnections, cable-free control available
     _lock: "threading.Lock" = field(default_factory=threading.Lock)
+    _epoch: int = 0                # bumped by suspend(); invalidates in-flight set()s
+    _inflight: object = None       # the device call running right now, so suspend() can cut it
+
+    # --- call plumbing ---------------------------------------------------
+
+    def suspend(self) -> None:
+        """Invalidate every queued and in-flight set(), used by Restore GPS and by
+        stopping a route or walk.
+
+        Without this a fix that was already in flight can land *after* clear() and
+        silently re-spoof the phone the user just restored. Bumping the epoch drops
+        the queued callers; cancelling the running future means a wedged call
+        doesn't make the user wait out its whole timeout budget."""
+        self._epoch += 1
+        fut = self._inflight
+        if fut is not None:
+            try:
+                fut.cancel()
+            except Exception:
+                pass
+
+    def _run(self, coro, timeout: float):
+        """Run one device coroutine, bounded, and recorded so suspend() can cut it."""
+        fut = _loop.submit(coro)
+        self._inflight = fut
+        try:
+            return _loop.wait(fut, timeout)
+        finally:
+            self._inflight = None
+
+    def _acquire(self, what: str):
+        if not self._lock.acquire(timeout=LOCK_TIMEOUT):
+            raise SpooferError(f"The iPhone is busy and didn\u2019t free up (while trying to {what}).")
 
     def set(self, lat: float, lon: float) -> None:
         """Place the iPhone at (lat, lon).
@@ -262,18 +338,31 @@ class Device:
         surfacing as 'channel is closed'. So on any failure we rebuild the DVT +
         location channels on the existing tunnel and retry once. The lock serializes
         concurrent callers (route + jitter + walk) so a reopen never races a set.
+
+        Every step is time-bounded, so a dead tunnel surfaces as an exception the
+        caller can act on instead of a thread parked forever holding the lock.
         """
-        with self._lock:
+        epoch = self._epoch
+        self._acquire("set the location")
+        try:
+            if epoch != self._epoch:
+                return                      # a stop/Restore overtook this fix
             try:
-                _loop.run(self._location.set(lat, lon))
+                self._run(self._location.set(lat, lon), SET_TIMEOUT)
+            except Cancelled:
+                return
             except Exception as first:
                 _log(f"location set failed ({first!r}); reopening DVT/location channel", exc=True)
                 try:
-                    _loop.run(self._reopen())
-                    _loop.run(self._location.set(lat, lon))
+                    self._run(self._reopen(), REOPEN_TIMEOUT)
+                    self._run(self._location.set(lat, lon), SET_TIMEOUT)
+                except Cancelled:
+                    return
                 except Exception as second:
                     _log(f"reopen+retry failed: {second!r}", exc=True)
                     raise
+        finally:
+            self._lock.release()
 
     async def _reopen(self) -> None:
         """Rebuild the DVT + LocationSimulation channels on the existing RSD tunnel."""
@@ -283,29 +372,34 @@ class Device:
             pass
         stack = AsyncExitStack()
         dvt = DvtProvider(self._rsd)
-        await asyncio.wait_for(stack.enter_async_context(dvt), 20)
+        await asyncio.wait_for(stack.enter_async_context(dvt), 8)
         location = LocationSimulation(dvt)
-        await asyncio.wait_for(stack.enter_async_context(location), 20)
+        await asyncio.wait_for(stack.enter_async_context(location), 8)
         self._loc_stack = stack
         self._location = location
 
     def clear(self) -> None:
         """Drop the spoof; iOS reacquires the real GPS fix in a few seconds.
 
-        Same idle-channel recovery as set(): the DVT channel may have been torn
-        down while sitting connected, so on failure rebuild it and retry once.
+        suspend() runs first so no in-flight or queued fix can re-spoof the phone
+        behind us. Same idle-channel recovery as set(): the DVT channel may have
+        been torn down while sitting connected, so on failure rebuild and retry once.
         """
-        with self._lock:
+        self.suspend()
+        self._acquire("restore real GPS")
+        try:
             try:
-                _loop.run(self._location.clear())
+                self._run(self._location.clear(), CLEAR_TIMEOUT)
             except Exception as first:
                 _log(f"location clear failed ({first!r}); reopening DVT/location channel", exc=True)
                 try:
-                    _loop.run(self._reopen())
-                    _loop.run(self._location.clear())
+                    self._run(self._reopen(), REOPEN_TIMEOUT)
+                    self._run(self._location.clear(), CLEAR_TIMEOUT)
                 except Exception as second:
                     _log(f"reopen+retry failed: {second!r}", exc=True)
                     raise
+        finally:
+            self._lock.release()
 
     def play_route(self, points, speed_mps, stop: threading.Event,
                    dt: float = 1.0, on_step: Optional[Callable] = None,
@@ -337,21 +431,30 @@ class Device:
     def close(self, clear: bool = True) -> None:
         """Tear down the DVT/location session + tunnel. With clear=False the
         simulated location is LEFT ACTIVE on the iPhone (it persists until the user
-        resets it or the device reboots), used when disconnecting on purpose."""
-        async def shutdown():
-            if clear:
-                try:
-                    await self._location.clear()
-                except Exception:
-                    pass
-            try:
-                await self._loc_stack.aclose()
-            finally:
-                await self._stack.aclose()
+        resets it or the device reboots), used when disconnecting on purpose.
+
+        Bounded and suspend-first: quitting the app must never block on a device
+        that stopped answering."""
+        self.suspend()
+        got = self._lock.acquire(timeout=CLOSE_TIMEOUT)
         try:
-            _loop.run(shutdown())
-        except Exception:
-            pass
+            async def shutdown():
+                if clear:
+                    try:
+                        await asyncio.wait_for(self._location.clear(), CLEAR_TIMEOUT)
+                    except Exception:
+                        pass
+                try:
+                    await self._loc_stack.aclose()
+                finally:
+                    await self._stack.aclose()
+            try:
+                self._run(shutdown(), CLOSE_TIMEOUT + CLEAR_TIMEOUT)
+            except Exception as e:
+                _log(f"close failed ({e!r}); the session is dropped anyway")
+        finally:
+            if got:
+                self._lock.release()
 
 
 def connect(on_status: Optional[StatusFn] = None) -> Device:

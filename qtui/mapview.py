@@ -300,9 +300,13 @@ class MapPanel(QFrame):
         self.bridge.set_location(lat, lon)   # re-assert the spoof; located shows the marker
 
     def stop_motion(self):
-        """Stop any active route or walk (e.g. before restoring real GPS)."""
+        """Stop any active route or walk (e.g. before restoring real GPS).
+
+        Also suspends the device so a fix that was already in flight can't land
+        after the stop and silently move the phone again."""
         self.stop_route()
         self._walk_release()
+        self.bridge.suspend()
 
     def clear_all(self):
         """Full clear on disconnect: stop motion and remove the live marker + pin."""
@@ -425,10 +429,9 @@ class MapPanel(QFrame):
                 lat += (vx * dist) / _M_PER_DEG
                 lon += (vy * dist) / (_M_PER_DEG * max(0.15, math.cos(math.radians(lat))))
                 self._walk_pos = (lat, lon)
-                try:
-                    self.bridge.device.set(lat, lon)
-                except Exception:
-                    pass
+                if not self.bridge.push(lat, lon):
+                    self._walk_release()   # session gone (push started the reconnect)
+                    break
                 self._walkStep.emit(lat, lon)
             time.sleep(dt)
         if self._walk_pos:
@@ -462,11 +465,8 @@ class MapPanel(QFrame):
                 if (self._jitter_on and self.bridge.device is not None
                         and self._anchor and not self._walking and not self._playing):
                     jlat, jlon = _jitter(self._anchor[0], self._anchor[1], self._jitter_m)
-                    try:
-                        self.bridge.device.set(jlat, jlon)
-                    except Exception:
-                        pass
-                    self._jitterStep.emit(jlat, jlon)
+                    if self.bridge.push(jlat, jlon, quiet=True):
+                        self._jitterStep.emit(jlat, jlon)
             except Exception:
                 pass
             time.sleep(1.5)
@@ -483,6 +483,19 @@ class MapPanel(QFrame):
 
     def set_jitter(self, on: bool):
         self._jitter_on = bool(on)
+
+    def heartbeat_point(self):
+        """The fix the bridge's monitor may re-assert to prove the developer
+        channel is still alive, or None when there is nothing to probe with.
+
+        None when no spoof is active (a write would move a user who is on real
+        GPS), and None while a walk, a route, or jitter is running: each of those
+        already round-trips through bridge.push() far more often than the monitor
+        would, and reports a dead session through the same path.
+        """
+        if self._walking or self._playing or self._jitter_on:
+            return None
+        return self._active_spoof
 
     def set_brightness(self, name: str):
         self.map.set_brightness(name)
@@ -594,16 +607,17 @@ class MapPanel(QFrame):
             seq = path + path[-2::-1] if self.bounce else path   # forward, then back
             repeat = self.loop or self.bounce
             total = len(seq)
-            dev = self.bridge.device
             while True:
                 for i, (lat, lon) in enumerate(seq, 1):
                     if self._route_stale(gen):
                         self._routeDone.emit("Route stopped.")
                         return
-                    try:
-                        dev.set(lat, lon)
-                    except Exception:
-                        pass
+                    # read the device through the bridge every fix, so a reconnect
+                    # swaps it cleanly instead of us writing to a dead session
+                    if not self.bridge.push(lat, lon):
+                        self._routeDone.emit("Lost the iPhone, reconnecting\u2026 "
+                                             "press Start again once it\u2019s back.")
+                        return
                     self._walkStep.emit(lat, lon)
                     self.hint.emit(f"{self._transport}…  {i}/{total}   ({lat:.5f}, {lon:.5f})")
                     if self._route_sleep(gen, 1.0):

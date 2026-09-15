@@ -34,20 +34,27 @@ class PortableController(QObject):
         threading.Thread(target=self._worker, daemon=True).start()
 
     def _worker(self):
+        # bind the server to a local: stop() nulls self._portable underneath us, and
+        # reaching through the attribute would blow up mid-poll
         import portable
-        self._portable = portable.Portable()
+        server = portable.Portable()
+        self._portable = server
         try:
-            url = self._portable.start()        # may prompt for the admin password once
+            url = server.start()                # may prompt for the admin password once
         except Exception as e:
             self._poll = False
             self.failed.emit(str(e))
             return
+        if not self._poll:                      # stopped while the server was starting
+            threading.Thread(target=server.stop, daemon=True).start()
+            return
         self.qrReady.emit(url)
         while self._poll:
-            if not self._portable.alive():
-                self.failed.emit("Phone server stopped, switch to This Mac and back to retry.")
+            if not server.alive():
+                if self._poll:                  # a stop() of our own isn't a failure
+                    self.failed.emit("Phone server stopped, switch to This Mac and back to retry.")
                 return
-            self.statusUpdate.emit(self._portable.status())
+            self.statusUpdate.emit(server.status())
             time.sleep(2.0)
 
     def qr_png(self):
