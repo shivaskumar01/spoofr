@@ -92,8 +92,14 @@ That's expected, not a bug.
   ⌃⌥⌘R restores real GPS from anywhere.
 - iPhone: click the iPhone tab, scan the QR with your Camera, and control it from Safari.
 
-For a dev run: `.venv/bin/python -m qtui`. The basemap URL is `DEFAULT_TILES` in
-`qtui/tilemap.py`.
+For a dev run: `.venv/bin/python -m qtui`. The basemap is `DEFAULT_SOURCE` in
+`qtui/tilemap.py` — Esri's street map, desaturated and inverted on arrival into the
+dark canvas the rest of the UI is built around. It needs no API key, which is the
+whole point: CARTO's dark basemap now stamps "API KEY REQUIRED" across every tile
+while still answering HTTP 200, so nothing in the fetch path can tell it failed.
+The phone's map (`web/app.js`) uses the same source, inverted in MapLibre's raster
+paint. To change basemaps, set a new `TileSource`; the tile cache is keyed to the
+URL, so switching never serves stale tiles from the old provider.
 
 ## Headless host (always-on, no desktop app)
 

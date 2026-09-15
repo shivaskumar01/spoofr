@@ -118,3 +118,32 @@ def test_shutdown_leaves_the_spoof_on_the_phone(state, monkeypatch):
     state.shutdown()
     assert state.device is None
     assert dev.closed_with_clear is False
+
+
+class TestTunnelElevation:
+    """How the app asks for root once and hands the tunnel to launchd."""
+
+    def test_command_detaches_without_nohup(self):
+        """nohup dies under `do shell script ... with administrator privileges`
+        ("can't detach from console: Inappropriate ioctl for device") and never
+        execs the command, so the password is accepted and the tunnel still
+        never comes up. It works fine unprivileged, which hid the bug."""
+        import portable
+        sh = portable.detached_cmd(["/bin/echo", "hi"], "/tmp/x.log")
+        assert "nohup" not in sh
+        assert sh.startswith("(") and sh.endswith(")")       # detaching subshell
+        assert "> /tmp/x.log" in sh and "2>&1" in sh and "< /dev/null" in sh
+        assert sh.rstrip(") ").endswith("&")                 # backgrounded
+
+    def test_arguments_with_spaces_survive_quoting(self):
+        import portable
+        sh = portable.detached_cmd(["/Applications/My App/bin/py", "--tunneld"], "/tmp/x.log")
+        assert "'/Applications/My App/bin/py'" in sh
+
+    def test_helper_points_at_the_ui_free_entry_point(self):
+        """The root tunnel helper must not boot a GUI toolkit."""
+        import portable
+        argv = portable._helper_cmd("--tunneld")
+        assert argv[-1] == "--tunneld"
+        assert "gui.py" not in " ".join(argv)
+        assert "spoofr_app.py" in " ".join(argv)

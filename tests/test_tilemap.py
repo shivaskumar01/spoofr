@@ -62,3 +62,56 @@ def test_a_failing_tile_is_retried_but_not_forever(tmap):
             tmap._request(key)
         tmap._failed[key] = tmap._failed.get(key, 0) + 1   # what _on_tile does on error
     assert len(requested) == MAX_TILE_ATTEMPTS - 1
+
+
+def test_tile_scale_comes_from_the_tile_not_the_display(tmap):
+    """A source that only serves 256px would be drawn at half size on a retina
+    Mac if we assumed @2x, tearing the grid open."""
+    from PySide6.QtGui import QPixmap
+    for width, expected in ((TILE, 1.0), (TILE * 2, 2.0)):
+        pm = QPixmap(width, width)
+        pm.fill()
+        assert tmap._prepare(pm).devicePixelRatio() == pytest.approx(expected)
+
+
+def test_recolour_turns_a_light_basemap_dark(tmap):
+    from PySide6.QtGui import QColor, QPixmap
+    assert tmap._source.recolor, "the default source is a light map we invert"
+    white = QPixmap(TILE, TILE)
+    white.fill(QColor("#ffffff"))
+    out = tmap._prepare(white).toImage()
+    assert QColor(out.pixel(8, 8)).lightness() < 20, "white should invert to near-black"
+
+    black = QPixmap(TILE, TILE)
+    black.fill(QColor("#000000"))
+    out = tmap._prepare(black).toImage()
+    assert QColor(out.pixel(8, 8)).lightness() > 235, "black should invert to near-white"
+
+
+def test_no_source_depends_on_an_api_key(tmap):
+    """CARTO still answers 200 while stamping "API KEY REQUIRED" across every
+    tile, so no fetch-level check can catch it. Pin the source instead, on both
+    surfaces — the desktop map and the phone's."""
+    import pathlib
+    import re
+
+    assert "cartocdn" not in tmap._source.url
+    assert tmap._source.attribution
+
+    for f, comment in (("qtui/tilemap.py", "#"), ("web/app.js", "//")):
+        for i, line in enumerate(pathlib.Path(f).read_text(encoding="utf-8").splitlines(), 1):
+            if "cartocdn" in line:
+                stripped = line.strip()
+                assert stripped.startswith(comment) or stripped.startswith("*"), (
+                    f"{f}:{i} still points at a keyed basemap: {stripped}")
+
+
+def test_both_surfaces_use_the_same_basemap(tmap):
+    """The Mac app and the phone should not drift onto different providers."""
+    import pathlib
+    import re
+    js = pathlib.Path("web/app.js").read_text(encoding="utf-8")
+    m = re.search(r'tiles:\s*\["([^"]+)"\]', js)
+    assert m, "could not find the raster tile template in web/app.js"
+    host = lambda u: u.split("/")[2]
+    assert host(m.group(1)) == host(tmap._source.url)

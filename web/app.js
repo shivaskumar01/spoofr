@@ -19,14 +19,26 @@ let route = [];       // waypoints [[lng, lat], ...]
 let connected = false;
 
 // ---- map (MapLibre = native pinch/pan/zoom on the phone) ----
+// Esri's street map, inverted to dark in the raster paint. CARTO's dark_all now
+// stamps "API KEY REQUIRED" across every tile while still answering 200, so it
+// cannot be used without a key; Esri needs none. Flipping brightness-min/max
+// inverts the ramp, and -1 saturation drops the colour: a light street map
+// becomes the dark canvas this UI is built around. Matches qtui/tilemap.py.
 const style = {
   version: 8,
   sources: { c: {
     type: "raster",
-    tiles: ["a", "b", "c"].map(s => `https://${s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png`),
-    tileSize: 256, attribution: "© OpenStreetMap © CARTO",
+    tiles: ["https://services.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}"],
+    tileSize: 256, attribution: "© Esri",
   } },
-  layers: [{ id: "c", type: "raster", source: "c" }],
+  layers: [{
+    id: "c", type: "raster", source: "c",
+    paint: {
+      "raster-saturation": -1,
+      "raster-brightness-min": 1,
+      "raster-brightness-max": 0,
+    },
+  }],
 };
 const map = new maplibregl.Map({ container: "map", style, center: [0, 20], zoom: 2, attributionControl: false });
 map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "bottom-right");

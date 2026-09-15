@@ -18,14 +18,18 @@ and `viewChanged` signals.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from pathlib import Path
+from typing import NamedTuple
 
 from PySide6.QtCore import (
     QEasingCurve, QPointF, QRect, QRectF, Qt, Signal, QStandardPaths, QTimer,
     QUrl, QVariantAnimation,
 )
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap, QRegion
+from PySide6.QtGui import (
+    QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QRegion,
+)
 from PySide6.QtNetwork import (
     QNetworkAccessManager, QNetworkDiskCache, QNetworkRequest, QNetworkReply,
 )
@@ -37,8 +41,35 @@ from . import theme
 
 TILE = 256
 MAX_TILE_ATTEMPTS = 3     # give up re-requesting a tile that keeps erroring
-DEFAULT_TILES = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
 SUBDOMAINS = ("a", "b", "c")
+
+
+class TileSource(NamedTuple):
+    """Where basemap tiles come from, and what to do with them on arrival.
+
+    `url` is a slippy template; {s} picks a subdomain and {r} becomes "@2x" when
+    `retina` is set and the display warrants it. Note the segment order is the
+    source's own — Esri serves {z}/{y}/{x}.
+    """
+    url: str
+    attribution: str
+    recolor: bool = False     # desaturate + invert a light basemap into a dark one
+    retina: bool = False      # does this source serve @2x tiles?
+
+
+# Esri's street map, recoloured to dark on arrival. CARTO's dark_all was the
+# obvious choice and looked better, but it now stamps "API KEY REQUIRED" across
+# every tile while still answering 200, so nothing in the fetch path can even
+# tell it failed. Esri needs no key, carries street labels at every zoom, and a
+# desaturate + invert turns it into the dark canvas the rest of the UI expects.
+ESRI_DARK = TileSource(
+    url=("https://services.arcgisonline.com/ArcGIS/rest/services/"
+         "World_Street_Map/MapServer/tile/{z}/{y}/{x}"),
+    attribution="Esri",
+    recolor=True,
+)
+
+DEFAULT_SOURCE = ESRI_DARK
 
 
 def _clamp(v, lo, hi):
@@ -64,10 +95,10 @@ class TileMap(QGraphicsView):
     clicked = Signal(float, float)       # left-click (not a drag) at (lat, lon)
     viewChanged = Signal()               # center/zoom changed (after the view settled)
 
-    def __init__(self, parent=None, tile_url: str = DEFAULT_TILES,
+    def __init__(self, parent=None, source: TileSource = DEFAULT_SOURCE,
                  min_zoom: int = 2, max_zoom: int = 20):
         super().__init__(parent)
-        self._tile_url = tile_url
+        self._source = source
         self.min_zoom, self.max_zoom = min_zoom, max_zoom
         self._zoom = 11.0                # fractional zoom
         self._z = 11                     # integer tile level the scene is built at
@@ -103,8 +134,11 @@ class TileMap(QGraphicsView):
         # --- async tile loading w/ disk cache ---
         self._nam = QNetworkAccessManager(self)
         cache = QNetworkDiskCache(self)
+        # keyed to the source: switching basemaps must not keep serving tiles
+        # cached from the old one (which is how watermarked tiles would survive)
+        tag = hashlib.sha1(source.url.encode()).hexdigest()[:10]
         cache_dir = Path(QStandardPaths.writableLocation(
-            QStandardPaths.StandardLocation.CacheLocation)) / "tiles"
+            QStandardPaths.StandardLocation.CacheLocation)) / "tiles" / tag
         cache.setCacheDirectory(str(cache_dir))
         cache.setMaximumCacheSize(256 * 1024 * 1024)   # 256 MB on disk
         self._nam.setCache(cache)
@@ -425,8 +459,8 @@ class TileMap(QGraphicsView):
             return
         z, x, y = key
         sub = SUBDOMAINS[(x + y) % len(SUBDOMAINS)]
-        r = "@2x" if self._retina else ""
-        url = (self._tile_url.replace("{s}", sub).replace("{z}", str(z))
+        r = "@2x" if (self._source.retina and self._retina) else ""
+        url = (self._source.url.replace("{s}", sub).replace("{z}", str(z))
                .replace("{x}", str(x)).replace("{y}", str(y)).replace("{r}", r))
         req = QNetworkRequest(QUrl(url))
         req.setAttribute(QNetworkRequest.Attribute.CacheLoadControlAttribute,
@@ -446,10 +480,9 @@ class TileMap(QGraphicsView):
                 pix = QPixmap()
                 pix.loadFromData(reply.readAll())
                 if not pix.isNull():
-                    pix.setDevicePixelRatio(2.0 if self._retina else 1.0)
                     item = self._tiles.get(key)
                     if item is not None:
-                        item.setPixmap(pix)
+                        item.setPixmap(self._prepare(pix))
                         self._failed.pop(key, None)
             elif err != QNetworkReply.NetworkError.OperationCanceledError:
                 # failed (offline blip / HTTP error / timeout): count it so the
@@ -458,6 +491,21 @@ class TileMap(QGraphicsView):
                     self._failed[key] = self._failed.get(key, 0) + 1
         finally:
             reply.deleteLater()
+
+    def _prepare(self, pix: QPixmap) -> QPixmap:
+        """Scale-correct the tile, and recolour it if the source needs it.
+
+        The device pixel ratio comes from the tile we actually received rather
+        than from a guess about the display: a source that only serves 256px
+        would otherwise be drawn at half size on a retina Mac and tear the grid.
+        """
+        dpr = max(1.0, pix.width() / TILE)
+        if self._source.recolor:
+            img = pix.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
+            img.invertPixels()          # light street map -> dark canvas
+            pix = QPixmap.fromImage(img)
+        pix.setDevicePixelRatio(dpr)
+        return pix
 
     # ---- input: pan (drag / two-finger scroll), zoom (pinch / double-click) ----
 

@@ -20,3 +20,15 @@ def qapp():
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance() or QApplication([])
     yield app
+
+
+@pytest.fixture(autouse=True)
+def isolated_log(tmp_path, monkeypatch):
+    """Keep the suite out of the user's real ~/.spoofr/spoofr.log.
+
+    core._log is applog.log, and several tests drive failure paths that log, so
+    without this a test run scribbles fake-device errors into the file you read
+    when something actually goes wrong.
+    """
+    import applog
+    monkeypatch.setattr(applog, "PATH", tmp_path / "spoofr.log")

@@ -23,6 +23,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 PY = HERE / ".venv" / "bin" / "python"
 TUNNELD_PORT = 49151
+TUNNELD_LOG = "/tmp/spoofr-tunneld.log"
 
 
 def _helper_cmd(*args: str) -> list[str]:
@@ -83,6 +84,23 @@ def _kill_my_servers() -> None:
         pass
 
 
+def detached_cmd(argv: list[str], log: str) -> str:
+    """A shell command that starts `argv` in the background and lets go of it.
+
+    Deliberately not nohup. Under `do shell script ... with administrator
+    privileges` nohup dies with "can't detach from console: Inappropriate ioctl
+    for device" and never execs the command at all — so the user typed their
+    password, osascript reported success, and the tunnel still never came up
+    (see the root-owned /tmp/spoofr-tunneld.log). It works fine unprivileged,
+    which is what made it easy to miss.
+
+    Redirecting all three streams inside a backgrounded subshell is enough: the
+    subshell exits at once and the child is reparented to launchd.
+    """
+    cmd = " ".join(shlex.quote(c) for c in argv)
+    return f"( {cmd} > {log} 2>&1 < /dev/null & )"
+
+
 def ensure_tunnel() -> None:
     """Make sure tunneld is on :49151. If it's down and we're not root, start it
     as a root daemon via ONE macOS admin prompt; then the non-root app attaches."""
@@ -90,8 +108,7 @@ def ensure_tunnel() -> None:
         return
     if os.geteuid() == 0:
         return  # running as root → core._Tunneld.ensure() will spawn it
-    cmd = " ".join(shlex.quote(c) for c in _helper_cmd("--tunneld"))
-    sh = f"nohup {cmd} > /tmp/spoofr-tunneld.log 2>&1 &"
+    sh = detached_cmd(_helper_cmd("--tunneld"), TUNNELD_LOG)
     ascmd = sh.replace("\\", "\\\\").replace('"', '\\"')
     r = subprocess.run(["osascript", "-e",
                         f'do shell script "{ascmd}" with administrator privileges'],
