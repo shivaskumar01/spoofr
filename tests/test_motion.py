@@ -26,18 +26,30 @@ def panel(qapp, monkeypatch, tmp_path):
     p._closing = True
 
 
-def test_route_stops_when_the_session_dies(panel):
+def test_route_pauses_when_the_session_dies(panel):
+    """Losing the phone must not throw away a route that is halfway done."""
+    from PySide6.QtWidgets import QApplication
     panel.bridge.device = FakeDevice(error=RuntimeError("Connection closed"))
     done = []
     panel._routeDone.connect(done.append)
     panel.speed = 100.0
     panel._route_gen += 1
+    gen = panel._route_gen
     panel._playing = True
-    panel._route_worker([(0.0, 0.0), (0.0, 0.01)], panel._route_gen)
-    from PySide6.QtWidgets import QApplication
-    QApplication.processEvents()          # deliver the queued signal
-    assert done and "Lost the iPhone" in done[0]
+    t = threading.Thread(target=panel._route_worker,
+                         args=([(0.0, 0.0), (0.0, 0.01)], gen), daemon=True)
+    t.start()
+    for _ in range(40):                       # let it fail a push and settle
+        QApplication.processEvents()
+        if panel.route_is_suspended():
+            break
+        time.sleep(0.05)
+    assert panel.route_is_suspended(), "route ended instead of waiting"
     assert panel.bridge.is_reconnecting()
+    assert not done, "a paused route is not a finished route"
+    panel.stop_route()                        # only the user ends it
+    t.join(3)
+    assert not t.is_alive()
 
 
 def test_route_walks_every_fix_while_the_device_is_healthy(panel):
@@ -251,3 +263,116 @@ class TestRouteStartsFromThePhone:
         self._route_mode(panel)
         panel.start_route()
         assert panel._playing is False
+
+
+class TestRouteSurvivesUnplugging:
+    """Unplug after Start and the walk keeps going; plug back in and it carries on.
+
+    A route used to be abandoned the moment a push failed, so a cable pulled
+    thirty seconds into a twenty-minute walk cost you the whole walk.
+    """
+
+    def _running_route(self, panel):
+        from tests.test_bridge import FakeDevice
+        dev = FakeDevice()
+        panel.bridge.device = dev
+        panel.set_snap(False)
+        panel.set_mode("route")
+        panel._active_spoof = (37.7749, -122.4194)
+        panel._on_click(37.7880, -122.4074)
+        panel.speed = 200.0
+        panel.start_route()
+        return dev
+
+    def _settle(self, panel, predicate, seconds=4.0):
+        from PySide6.QtWidgets import QApplication
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            QApplication.processEvents()
+            if predicate():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_a_dead_session_pauses_rather_than_ends(self, panel, qapp):
+        dev = self._running_route(panel)
+        assert self._settle(panel, lambda: len(dev.sets) >= 1)
+        dev.error = RuntimeError("Connection closed")          # the cable goes
+        assert self._settle(panel, panel.route_is_suspended), "route did not pause"
+        assert panel._playing is True, "a paused route is still a route"
+        panel.stop_route()
+
+    def test_nothing_is_pushed_while_the_phone_is_away(self, panel, qapp):
+        dev = self._running_route(panel)
+        assert self._settle(panel, lambda: len(dev.sets) >= 1)
+        dev.error = RuntimeError("Connection closed")
+        assert self._settle(panel, panel.route_is_suspended)
+        n = len(dev.sets)
+        self._settle(panel, lambda: False, seconds=1.5)         # just wait
+        assert len(dev.sets) == n
+        panel.stop_route()
+
+    def test_it_resumes_on_the_fix_it_was_holding(self, panel, qapp):
+        """Not restarted from the top, and not skipped ahead."""
+        dev = self._running_route(panel)
+        assert self._settle(panel, lambda: len(dev.sets) >= 2)
+        dev.error = RuntimeError("Connection closed")
+        assert self._settle(panel, panel.route_is_suspended)
+        before = list(dev.sets)
+        dev.error = None
+        panel.bridge.device = dev                               # a reconnect lands
+        assert self._settle(panel, lambda: len(dev.sets) > len(before)), "never resumed"
+        assert dev.sets[:len(before)] == before, "route restarted instead of resuming"
+        assert dev.sets[len(before)] != before[0], "resumed from the beginning"
+        assert panel.route_is_suspended() is False
+        panel.stop_route()
+
+    def test_the_travelled_track_is_kept_across_the_gap(self, panel, qapp):
+        dev = self._running_route(panel)
+        assert self._settle(panel, lambda: len(panel._travelled) >= 2)
+        walked = len(panel._travelled)
+        dev.error = RuntimeError("Connection closed")
+        assert self._settle(panel, panel.route_is_suspended)
+        assert len(panel._travelled) >= walked
+        assert panel._travel_ov is not None
+        panel.stop_route()
+
+    def test_stop_still_ends_a_paused_route(self, panel, qapp):
+        """The user is the only one who gets to cancel it."""
+        dev = self._running_route(panel)
+        assert self._settle(panel, lambda: len(dev.sets) >= 1)
+        dev.error = RuntimeError("Connection closed")
+        assert self._settle(panel, panel.route_is_suspended)
+        panel.stop_route()
+        assert self._settle(panel, lambda: not panel.route_is_suspended())
+        assert panel._playing is False
+
+
+class TestTheMacStaysAwake:
+    """The Mac pushes every fix, so idle sleep stops a route dead halfway."""
+
+    def test_a_playing_route_holds_off_sleep(self, panel, qapp):
+        assert panel._caffeinate is None
+        panel.hold_awake(True)
+        try:
+            assert panel._caffeinate is not None
+            assert panel._caffeinate.poll() is None, "caffeinate exited immediately"
+        finally:
+            panel.hold_awake(False)
+        assert panel._caffeinate is None
+
+    def test_releasing_twice_is_harmless(self, panel, qapp):
+        panel.hold_awake(False)
+        panel.hold_awake(False)
+        assert panel._caffeinate is None
+
+    def test_it_is_wired_to_the_playing_state(self, panel, qapp):
+        from PySide6.QtWidgets import QApplication
+        panel.playingChanged.emit(True)
+        QApplication.processEvents()
+        try:
+            assert panel._caffeinate is not None
+        finally:
+            panel.playingChanged.emit(False)
+            QApplication.processEvents()
+        assert panel._caffeinate is None

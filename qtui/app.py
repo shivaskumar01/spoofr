@@ -233,6 +233,15 @@ class MainWindow(QWidget):
     def _on_device_lost(self):
         # gone for good (reconnect gave up or was stopped), spoof persists on the phone
         self.panel.persist_spoof()
+        if self.panel.route_is_suspended():
+            # a route is mid-walk and holding. Keep it, and its waypoints, and let
+            # the idle visibility poll reconnect as soon as the phone is back —
+            # unplugging should cost you the walk you were halfway through.
+            self._set_connect_state("connect")
+            self.set_status("Waiting for your iPhone", theme.AMBER)
+            self.set_hint("Route paused. Plug the iPhone back in, or bring it back onto "
+                          "this Wi-Fi, and it picks up where it left off.")
+            return
         self.panel.clear_all()
         self.panel.show_walk_pad(False)
         self._set_connect_state("connect")
@@ -252,6 +261,11 @@ class MainWindow(QWidget):
             return
         if self.controlbar.app_mode.value() == "iPhone":
             return
+        if kinds and self.panel.route_is_suspended():
+            # a paused route wants its phone back; don't make the user click
+            self.set_status(f"iPhone back on {kinds}, reconnecting…", theme.AMBER)
+            self._start_connect()
+            return
         if kinds:
             self.set_status(f"Ready  ·  iPhone on {kinds}", theme.LIVE)
         else:
@@ -261,7 +275,11 @@ class MainWindow(QWidget):
         self._set_connect_state("disconnect")
         self.panel.show_walk_pad(True)
         spoof = self.settings.get("active_spoof")
-        if spoof:
+        if self.panel.route_is_suspended():
+            # the route's next fix is the right position; re-asserting an older
+            # one here would yank the phone backwards
+            self.set_hint("Reconnected — the route picks up where it left off.")
+        elif spoof:
             self.panel.restore_active_spoof(spoof["lat"], spoof["lon"])
             self.set_hint("Your iPhone is still set to your last location, Restore GPS to reset, "
                           "or pick a new spot.")
@@ -437,6 +455,7 @@ class MainWindow(QWidget):
 
     def closeEvent(self, e):
         self.panel._closing = True       # stop the jitter worker
+        self.panel.hold_awake(False)     # don't orphan caffeinate
         self.panel.persist_spoof()       # keep + remember the set location across runs
         self.portable.stop()
         if self._macui:

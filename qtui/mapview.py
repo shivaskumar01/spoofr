@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import random
+import subprocess
 import threading
 import time
 
@@ -81,6 +82,7 @@ class MapPanel(QFrame):
     committed = Signal(float, float)     # a teleport set landed (-> recents)
     requestTeleport = Signal()           # search/place in route mode -> switch to teleport
     playingChanged = Signal(bool)        # a route started / stopped
+    routeWaiting = Signal(bool)          # a route is holding for the iPhone to come back
     # worker-thread results, marshalled back to the GUI thread
     _suggestReady = Signal(str, object)
     _geocodeReady = Signal(float, float)
@@ -139,6 +141,9 @@ class MapPanel(QFrame):
         self._travelled: list[tuple[float, float]] = []   # the part already walked
         self._travel_ov = None
         self._route_is_track = False    # imported GPX: the file already includes a start
+        self._route_waiting = False     # mid-route, holding until the phone is back
+        self._route_at = (0, 0)         # (fix, total) — where a pause resumes from
+        self._caffeinate = None         # holds off idle sleep while a route plays
 
         self._build_floating()
         self._build_walk_pad()
@@ -219,6 +224,8 @@ class MapPanel(QFrame):
         self._jitterStep.connect(self._on_jitter_step)
         self._routeSnapped.connect(self._redraw_path)
         self._routeProgress.connect(self._on_route_progress)
+        self.routeWaiting.connect(self._on_route_waiting)
+        self.playingChanged.connect(self.hold_awake)
         self._routeDone.connect(self._on_route_done)
 
     def resizeEvent(self, e):
@@ -641,6 +648,7 @@ class MapPanel(QFrame):
         self._playing = True
         self._following = True
         self._clear_travelled()
+        self._route_at = (0, 0)
         self.playingChanged.emit(True)
         self.hint.emit(
             "Routing from where your iPhone is now…" if from_here else
@@ -675,7 +683,69 @@ class MapPanel(QFrame):
             self._travel_ov = None
 
     def _route_stale(self, gen: int) -> bool:
-        return gen != self._route_gen or self.bridge.device is None
+        """Only a newer route (or Stop) ends this one.
+
+        Deliberately not "is the device gone": unplugging mid-route used to make
+        every remaining fix stale and throw the walk away. A missing phone is a
+        reason to wait, which is what _await_device does.
+        """
+        return gen != self._route_gen
+
+    def route_is_suspended(self) -> bool:
+        """A route is mid-walk and holding for the phone to come back."""
+        return self._playing and self._route_waiting
+
+    def _await_device(self, gen: int) -> bool:
+        """Hold a running route until the session is back. False if it was stopped.
+
+        The app keeps trying to rebuild the session, and reconnects on its own
+        when the phone reappears, so the route simply waits here — parked on the
+        fix it was about to send, so it resumes exactly where it left off rather
+        than restarting or skipping ahead.
+        """
+        self._route_waiting = True
+        self.routeWaiting.emit(True)
+        try:
+            while not self._route_stale(gen):
+                # sleep first: if the session is present but every push still
+                # fails, returning immediately would spin this loop flat out
+                time.sleep(0.25)
+                if self.bridge.device is not None:
+                    return True
+            return False
+        finally:
+            self._route_waiting = False
+            self.routeWaiting.emit(False)
+
+    def hold_awake(self, on: bool):
+        """Keep the Mac out of idle sleep while a route is playing.
+
+        The Mac pushes every single fix, so if it dozes off the walk stops dead
+        halfway through and nothing says why. Best-effort: if caffeinate isn't
+        there, the route still runs, it just isn't protected from sleep.
+        """
+        if on and self._caffeinate is None:
+            try:
+                self._caffeinate = subprocess.Popen(
+                    ["/usr/bin/caffeinate", "-i"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                self._caffeinate = None
+        elif not on and self._caffeinate is not None:
+            proc, self._caffeinate = self._caffeinate, None
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    def _on_route_waiting(self, waiting: bool):
+        if waiting:
+            i, total = self._route_at
+            pct = i * 100 // max(total, 1)
+            self.hint.emit(f"Route paused at fix {i}/{total} ({pct}%) — waiting for your "
+                           "iPhone. It picks up exactly where it left off.")
+        else:
+            self.hint.emit("iPhone is back — resuming the route.")
 
     def _route_sleep(self, gen: int, dt: float) -> bool:
         """Sleep up to dt; return True early if this route was stopped/superseded."""
@@ -707,16 +777,20 @@ class MapPanel(QFrame):
             repeat = self.loop or self.bounce
             total = len(seq)
             while True:
-                for i, (lat, lon) in enumerate(seq, 1):
+                i = 0
+                while i < total:
                     if self._route_stale(gen):
                         self._routeDone.emit("Route stopped.")
                         return
+                    lat, lon = seq[i]
                     # read the device through the bridge every fix, so a reconnect
                     # swaps it cleanly instead of us writing to a dead session
                     if not self.bridge.push(lat, lon):
-                        self._routeDone.emit("Lost the iPhone, reconnecting… "
-                                             "press Start again once it’s back.")
-                        return
+                        if not self._await_device(gen):
+                            self._routeDone.emit("Route stopped.")
+                            return
+                        continue          # same fix again, now that it can land
+                    i += 1
                     self._walkStep.emit(lat, lon)
                     self._routeProgress.emit(i, total, lat, lon)
                     if self._route_sleep(gen, ROUTE_DT):
@@ -741,6 +815,7 @@ class MapPanel(QFrame):
             self._travel_ov = self.map.add_path(self._travelled, color=theme.LIVE, width=6, z=6)
         else:
             self.map.update_path(self._travel_ov, self._travelled)
+        self._route_at = (i, total)
         left = _clock(max(0, total - i) * ROUTE_DT)
         self.hint.emit(f"{self._transport}…  {i * 100 // max(total, 1)}%  ·  {left} to go  "
                        f"·  {i}/{total} fixes")

@@ -96,6 +96,13 @@ That's expected, not a bug.
   marker so you can see the progress, and the hint bar shows the percentage and time
   left. Restore GPS clears the spoof. The panic hotkey ⌃⌥⌘R restores real GPS from
   anywhere.
+
+  You can unplug straight after pressing Start. With wireless on, the route just keeps
+  going over Wi-Fi. If the phone does drop off entirely, the route *pauses* on the fix it
+  was about to send — it isn't cancelled — and picks up from exactly there when the phone
+  comes back; Spoofr reconnects on its own the moment it sees it, so there's nothing to
+  click. Only Stop ends a route. The one thing that must stay put is the Mac: it pushes
+  every fix, so Spoofr has to stay open (it holds off idle sleep while a route plays).
 - iPhone: click the iPhone tab, scan the QR with your Camera, and control it from Safari.
 
 For a dev run: `.venv/bin/python -m qtui`. The basemap is `DEFAULT_SOURCE` in
