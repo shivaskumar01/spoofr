@@ -41,10 +41,10 @@ def test_route_pauses_when_the_session_dies(panel):
     t.start()
     for _ in range(40):                       # let it fail a push and settle
         QApplication.processEvents()
-        if panel.route_is_suspended():
+        if panel.route_is_offline():
             break
         time.sleep(0.05)
-    assert panel.route_is_suspended(), "route ended instead of waiting"
+    assert panel.route_is_offline(), "route ended instead of waiting"
     assert panel.bridge.is_reconnecting()
     assert not done, "a paused route is not a finished route"
     panel.stop_route()                        # only the user ends it
@@ -265,87 +265,148 @@ class TestRouteStartsFromThePhone:
         assert panel._playing is False
 
 
-class TestRouteSurvivesUnplugging:
-    """Unplug after Start and the walk keeps going; plug back in and it carries on.
+class TestRouteRunsOnTheClock:
+    """Start at 6:30 with twenty minutes of route and you are done at 6:50 —
+    whether the phone was reachable the whole time, some of it, or none of it.
 
-    A route used to be abandoned the moment a push failed, so a cable pulled
-    thirty seconds into a twenty-minute walk cost you the whole walk.
+    Unplugging used to end the route outright; then it paused it, which made a
+    20-minute walk take longer than 20 minutes. Position is a function of elapsed
+    time now, so the phone catches up to wherever the route has got to.
     """
 
-    def _running_route(self, panel):
+    SRC, DST = (37.7749, -122.4194), (37.7880, -122.4074)
+
+    @pytest.fixture(autouse=True)
+    def _fast_clock(self, monkeypatch):
+        from qtui import mapview
+        monkeypatch.setattr(mapview, "ROUTE_DT", 0.05)   # 1 fix per 50ms
+
+    def _route(self, panel, speed=200.0):
         from tests.test_bridge import FakeDevice
         dev = FakeDevice()
         panel.bridge.device = dev
         panel.set_snap(False)
+        panel.set_jitter(False)                          # jitter would blur the assertions
         panel.set_mode("route")
-        panel._active_spoof = (37.7749, -122.4194)
-        panel._on_click(37.7880, -122.4074)
-        panel.speed = 200.0
-        panel.start_route()
+        panel._active_spoof = self.SRC
+        panel._set_live(*self.SRC)
+        panel._on_click(*self.DST)
+        panel.speed = speed
         return dev
 
-    def _settle(self, panel, predicate, seconds=4.0):
+    def _spin(self, seconds):
+        from PySide6.QtWidgets import QApplication
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            QApplication.processEvents()
+            time.sleep(0.01)
+
+    def _unplug(self, panel, dev):
+        dev.error = RuntimeError("Connection closed")
+
+    def _replug(self, panel, dev):
+        """A failed push drops bridge.device, so clearing the error is not enough
+        — a real replug is the bridge getting a working session back."""
+        dev.error = None
+        panel.bridge.device = dev
+
+    def _wait(self, predicate, seconds=6.0):
         from PySide6.QtWidgets import QApplication
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             QApplication.processEvents()
             if predicate():
                 return True
-            time.sleep(0.05)
+            time.sleep(0.01)
         return False
 
-    def test_a_dead_session_pauses_rather_than_ends(self, panel, qapp):
-        dev = self._running_route(panel)
-        assert self._settle(panel, lambda: len(dev.sets) >= 1)
-        dev.error = RuntimeError("Connection closed")          # the cable goes
-        assert self._settle(panel, panel.route_is_suspended), "route did not pause"
-        assert panel._playing is True, "a paused route is still a route"
-        panel.stop_route()
-
     def test_nothing_is_pushed_while_the_phone_is_away(self, panel, qapp):
-        dev = self._running_route(panel)
-        assert self._settle(panel, lambda: len(dev.sets) >= 1)
+        dev = self._route(panel)
+        panel.start_route()
+        assert self._wait(lambda: len(dev.sets) >= 2)
         dev.error = RuntimeError("Connection closed")
-        assert self._settle(panel, panel.route_is_suspended)
+        assert self._wait(panel.route_is_offline)
         n = len(dev.sets)
-        self._settle(panel, lambda: False, seconds=1.5)         # just wait
+        self._spin(0.6)
         assert len(dev.sets) == n
+        assert panel.route_is_playing(), "the route stopped instead of running on"
         panel.stop_route()
 
-    def test_it_resumes_on_the_fix_it_was_holding(self, panel, qapp):
-        """Not restarted from the top, and not skipped ahead."""
-        dev = self._running_route(panel)
-        assert self._settle(panel, lambda: len(dev.sets) >= 2)
+    def test_the_route_advances_while_out_of_touch(self, panel, qapp):
+        """The clock does not wait for the cable."""
+        dev = self._route(panel)
+        panel.start_route()
+        assert self._wait(lambda: panel._route_at[0] >= 2)
         dev.error = RuntimeError("Connection closed")
-        assert self._settle(panel, panel.route_is_suspended)
+        assert self._wait(panel.route_is_offline)
+        at_unplug = panel._route_at[0]
+        self._spin(1.0)                                   # 20 fixes' worth of time
+        self._replug(panel, dev)
+        assert self._wait(lambda: panel._route_at[0] > at_unplug + 10), "route did not catch up"
+        assert panel.route_is_offline() is False
+        panel.stop_route()
+
+    def test_it_catches_up_rather_than_replaying_the_gap(self, panel, qapp):
+        dev = self._route(panel)
+        panel.start_route()
+        assert self._wait(lambda: len(dev.sets) >= 2)
+        dev.error = RuntimeError("Connection closed")
+        assert self._wait(panel.route_is_offline)
         before = list(dev.sets)
-        dev.error = None
-        panel.bridge.device = dev                               # a reconnect lands
-        assert self._settle(panel, lambda: len(dev.sets) > len(before)), "never resumed"
-        assert dev.sets[:len(before)] == before, "route restarted instead of resuming"
-        assert dev.sets[len(before)] != before[0], "resumed from the beginning"
-        assert panel.route_is_suspended() is False
+        self._spin(1.0)
+        self._replug(panel, dev)
+        assert self._wait(lambda: len(dev.sets) > len(before))
+        resumed = dev.sets[len(before)]
+        assert resumed not in before, "replayed a fix from before the gap"
+        # the jump forward should be bigger than a single step
+        from qtui.route import meters
+        assert meters(before[-1], resumed) > 20.0, "resumed where it left off instead of catching up"
         panel.stop_route()
 
-    def test_the_travelled_track_is_kept_across_the_gap(self, panel, qapp):
-        dev = self._running_route(panel)
-        assert self._settle(panel, lambda: len(panel._travelled) >= 2)
-        walked = len(panel._travelled)
-        dev.error = RuntimeError("Connection closed")
-        assert self._settle(panel, panel.route_is_suspended)
-        assert len(panel._travelled) >= walked
-        assert panel._travel_ov is not None
-        panel.stop_route()
+    def test_it_finishes_on_time_despite_a_gap(self, panel, qapp):
+        from qtui import mapview
+        dev = self._route(panel)
+        done = []
+        panel._routeDone.connect(done.append)
+        started = time.monotonic()
+        panel.start_route()
+        assert self._wait(lambda: panel._route_at[1] > 0)
+        eta = panel._route_at[1] * mapview.ROUTE_DT
+        dev.error = RuntimeError("Connection closed")     # away for a third of it
+        assert self._wait(panel.route_is_offline)
+        self._spin(eta / 3)
+        self._replug(panel, dev)
+        assert self._wait(lambda: done, seconds=eta + 4)
+        took = time.monotonic() - started
+        assert done == ["Route complete."]
+        assert took < eta * 2, f"took {took:.1f}s for a {eta:.1f}s route"
 
-    def test_stop_still_ends_a_paused_route(self, panel, qapp):
-        """The user is the only one who gets to cancel it."""
-        dev = self._running_route(panel)
-        assert self._settle(panel, lambda: len(dev.sets) >= 1)
+    def test_a_phone_that_comes_back_late_still_lands_on_the_finished_route(self, panel, qapp):
+        """Away for longer than the whole route: reconnect and it is at the end."""
+        from qtui import mapview
+        dev = self._route(panel)
+        done = []
+        panel._routeDone.connect(done.append)
+        panel.start_route()
+        assert self._wait(lambda: panel._route_at[1] > 0)
+        total = panel._route_at[1]
         dev.error = RuntimeError("Connection closed")
-        assert self._settle(panel, panel.route_is_suspended)
+        assert self._wait(panel.route_is_offline)
+        self._spin(total * mapview.ROUTE_DT + 0.5)        # outlast the whole route
+        assert not done, "completed while it could not reach the phone"
+        self._replug(panel, dev)
+        assert self._wait(lambda: done, seconds=4)
+        assert done == ["Route complete."]
+        assert dev.sets[-1] == self.DST, "did not land on the destination"
+
+    def test_stop_still_ends_a_route_that_is_out_of_touch(self, panel, qapp):
+        dev = self._route(panel)
+        panel.start_route()
+        assert self._wait(lambda: len(dev.sets) >= 1)
+        dev.error = RuntimeError("Connection closed")
+        assert self._wait(panel.route_is_offline)
         panel.stop_route()
-        assert self._settle(panel, lambda: not panel.route_is_suspended())
-        assert panel._playing is False
+        assert self._wait(lambda: not panel.route_is_playing())
 
 
 class TestTheMacStaysAwake:

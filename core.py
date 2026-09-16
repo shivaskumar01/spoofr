@@ -40,7 +40,6 @@ for _brew in ("/opt/homebrew/bin", "/usr/local/bin"):
 
 import asyncio
 import re
-import shutil
 import socket
 import subprocess
 import threading
@@ -80,6 +79,8 @@ CLEAR_TIMEOUT = 8.0      # clearing the spoof: worth waiting a little longer
 REOPEN_TIMEOUT = 12.0    # rebuilding the DVT + location channels
 CLOSE_TIMEOUT = 5.0      # tearing the session down on disconnect/quit
 LOCK_TIMEOUT = 30.0      # ceiling on waiting for another caller's device op
+MOUNT_TIMEOUT = 300.0    # developer disk image, including a download on a new iOS
+RSD_TIMEOUT = 45.0       # how long to let the daemon find and tunnel this phone
 
 StatusFn = Callable[[str], None]
 
@@ -91,6 +92,16 @@ class SpooferError(RuntimeError):
 class DeveloperModeRequired(SpooferError):
     """Developer Mode is off on the iPhone, the GUI should run the enable wizard
     rather than show a plain error."""
+
+
+class NoDeviceFound(SpooferError):
+    """usbmux can't see an iPhone right now. Often transient — a phone that has
+    only just been plugged in takes a moment to enumerate."""
+
+
+class TunnelNotReady(SpooferError):
+    """The daemon is running but hasn't opened a tunnel to this iPhone yet.
+    Worth retrying, and worth restarting the daemon over; never a trust problem."""
 
 
 class Cancelled(SpooferError):
@@ -515,9 +526,9 @@ async def _open(say: StatusFn) -> Device:
     muxed = await _bounded(list_devices(), 10,
                            "Couldn’t reach usbmuxd (the USB device service).")
     if not muxed:
-        raise SpooferError("No iPhone reachable. Plug it in and tap “Trust”, or go "
-                           "cable-free: menu ▸ Settings ▸ “Go wireless” (one-time, with "
-                           "the cable in), then stay on the same Wi-Fi.")
+        raise NoDeviceFound("No iPhone reachable. Plug it in and tap “Trust”, or go "
+                            "cable-free: menu ▸ Settings ▸ “Go wireless” (one-time, with "
+                            "the cable in), then stay on the same Wi-Fi.")
     # prefer the cable when both links exist, faster and steadier for the
     # lockdown/mount phase; Wi-Fi-only devices still work
     muxed.sort(key=lambda d: d.connection_type != "USB")
@@ -542,9 +553,11 @@ async def _open(say: StatusFn) -> Device:
             dev_mode_on = True  # query unsupported → let the mount decide
         if not dev_mode_on:
             raise DeveloperModeRequired("Developer Mode is off on the iPhone.")
-        say("Preparing the developer disk image (first time can take a minute)…")
+        say("Preparing the developer disk image (first time can take a few minutes)…")
         try:
-            await asyncio.wait_for(auto_mount_personalized(lockdown), 60)
+            # generous: on a new iOS release this downloads a fresh image, and a
+            # 60s cap turned a slow connection into a hard failure
+            await asyncio.wait_for(auto_mount_personalized(lockdown), MOUNT_TIMEOUT)
         except asyncio.TimeoutError:
             raise SpooferError(_mount_timeout_message(ios)) from None
         except AlreadyMountedError:
@@ -586,23 +599,24 @@ async def _bounded(coro, seconds: float, message: str):
 
 
 def _mount_timeout_message(ios: str) -> str:
-    msg = [f"Mounting the developer disk image timed out (iOS {ios})."]
-    if shutil.which("ipsw") is None:
-        msg.append(
-            "\nThe `ipsw` CLI that pymobiledevice3 needs to build the image isn’t "
-            "installed. Install it, then click Connect again:\n"
-            "    brew install blacktop/tap/ipsw"
-        )
-    else:
-        msg.append(
-            "\nYour iOS version may be newer than this pymobiledevice3 can prepare a "
-            "developer image for, or Apple/GitHub was unreachable. Try again on a "
-            "stable network; if it keeps failing, pymobiledevice3 needs an update."
-        )
-    return "\n".join(msg)
+    """Why the developer disk image didn't mount.
+
+    pymobiledevice3 11 downloads a personalized image rather than building one
+    with the `ipsw` CLI, so this is now almost always the network — the first
+    mount on a new iOS release has to fetch the image before anything can start.
+    """
+    return (
+        f"Preparing the developer disk image timed out (iOS {ios}).\n\n"
+        "The first connect on a new iOS release downloads that image, so this is "
+        "usually a slow or interrupted network rather than anything about the "
+        "phone. Try again on a stable connection.\n\n"
+        "If it keeps failing on an iOS version that has only just come out, "
+        "pymobiledevice3 may need an update:\n"
+        "    .venv/bin/pip install -U pymobiledevice3"
+    )
 
 
-async def _wait_for_rsd(udid: str, say: StatusFn, timeout: float = 25.0):
+async def _wait_for_rsd(udid: str, say: StatusFn, timeout: float = RSD_TIMEOUT):
     """Wait for tunneld to publish a tunnel for this iPhone and return its RSD.
 
     tunneld needs a few seconds to discover the device after it starts, so we
@@ -622,7 +636,7 @@ async def _wait_for_rsd(udid: str, say: StatusFn, timeout: float = 25.0):
         if rsd is not None:
             return rsd
         if time.monotonic() >= deadline:
-            raise SpooferError(
+            raise TunnelNotReady(
                 "The tunnel daemon is running, but it never opened a tunnel to this "
                 "iPhone.\n\n"
                 "This is almost certainly not a trust problem: Spoofr just read this "

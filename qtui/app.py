@@ -233,7 +233,7 @@ class MainWindow(QWidget):
     def _on_device_lost(self):
         # gone for good (reconnect gave up or was stopped), spoof persists on the phone
         self.panel.persist_spoof()
-        if self.panel.route_is_suspended():
+        if self.panel.route_is_playing():
             # a route is mid-walk and holding. Keep it, and its waypoints, and let
             # the idle visibility poll reconnect as soon as the phone is back —
             # unplugging should cost you the walk you were halfway through.
@@ -261,7 +261,7 @@ class MainWindow(QWidget):
             return
         if self.controlbar.app_mode.value() == "iPhone":
             return
-        if kinds and self.panel.route_is_suspended():
+        if kinds and self.panel.route_is_playing():
             # a paused route wants its phone back; don't make the user click
             self.set_status(f"iPhone back on {kinds}, reconnecting…", theme.AMBER)
             self._start_connect()
@@ -275,7 +275,7 @@ class MainWindow(QWidget):
         self._set_connect_state("disconnect")
         self.panel.show_walk_pad(True)
         spoof = self.settings.get("active_spoof")
-        if self.panel.route_is_suspended():
+        if self.panel.route_is_playing():
             # the route's next fix is the right position; re-asserting an older
             # one here would yank the phone backwards
             self.set_hint("Reconnected — the route picks up where it left off.")

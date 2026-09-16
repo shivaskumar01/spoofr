@@ -82,7 +82,7 @@ class MapPanel(QFrame):
     committed = Signal(float, float)     # a teleport set landed (-> recents)
     requestTeleport = Signal()           # search/place in route mode -> switch to teleport
     playingChanged = Signal(bool)        # a route started / stopped
-    routeWaiting = Signal(bool)          # a route is holding for the iPhone to come back
+    routeOffline = Signal(bool)          # a running route can't reach the iPhone
     # worker-thread results, marshalled back to the GUI thread
     _suggestReady = Signal(str, object)
     _geocodeReady = Signal(float, float)
@@ -141,7 +141,7 @@ class MapPanel(QFrame):
         self._travelled: list[tuple[float, float]] = []   # the part already walked
         self._travel_ov = None
         self._route_is_track = False    # imported GPX: the file already includes a start
-        self._route_waiting = False     # mid-route, holding until the phone is back
+        self._route_offline = False     # running, but currently can't reach the phone
         self._route_at = (0, 0)         # (fix, total) — where a pause resumes from
         self._caffeinate = None         # holds off idle sleep while a route plays
 
@@ -224,7 +224,7 @@ class MapPanel(QFrame):
         self._jitterStep.connect(self._on_jitter_step)
         self._routeSnapped.connect(self._redraw_path)
         self._routeProgress.connect(self._on_route_progress)
-        self.routeWaiting.connect(self._on_route_waiting)
+        self.routeOffline.connect(self._on_route_offline)
         self.playingChanged.connect(self.hold_awake)
         self._routeDone.connect(self._on_route_done)
 
@@ -649,6 +649,7 @@ class MapPanel(QFrame):
         self._following = True
         self._clear_travelled()
         self._route_at = (0, 0)
+        self._route_offline = False
         self.playingChanged.emit(True)
         self.hint.emit(
             "Routing from where your iPhone is now…" if from_here else
@@ -686,36 +687,23 @@ class MapPanel(QFrame):
         """Only a newer route (or Stop) ends this one.
 
         Deliberately not "is the device gone": unplugging mid-route used to make
-        every remaining fix stale and throw the walk away. A missing phone is a
-        reason to wait, which is what _await_device does.
+        every remaining fix stale and throw the walk away. An unreachable phone
+        does not stop the clock.
         """
         return gen != self._route_gen
 
-    def route_is_suspended(self) -> bool:
-        """A route is mid-walk and holding for the phone to come back."""
-        return self._playing and self._route_waiting
+    def route_is_playing(self) -> bool:
+        """A route is running — reachable phone or not."""
+        return self._playing
 
-    def _await_device(self, gen: int) -> bool:
-        """Hold a running route until the session is back. False if it was stopped.
+    def route_is_offline(self) -> bool:
+        """A running route that currently cannot reach the phone."""
+        return self._playing and self._route_offline
 
-        The app keeps trying to rebuild the session, and reconnects on its own
-        when the phone reappears, so the route simply waits here — parked on the
-        fix it was about to send, so it resumes exactly where it left off rather
-        than restarting or skipping ahead.
-        """
-        self._route_waiting = True
-        self.routeWaiting.emit(True)
-        try:
-            while not self._route_stale(gen):
-                # sleep first: if the session is present but every push still
-                # fails, returning immediately would spin this loop flat out
-                time.sleep(0.25)
-                if self.bridge.device is not None:
-                    return True
-            return False
-        finally:
-            self._route_waiting = False
-            self.routeWaiting.emit(False)
+    def _set_offline(self, offline: bool):
+        if offline != self._route_offline:
+            self._route_offline = offline
+            self.routeOffline.emit(offline)
 
     def hold_awake(self, on: bool):
         """Keep the Mac out of idle sleep while a route is playing.
@@ -738,14 +726,13 @@ class MapPanel(QFrame):
             except Exception:
                 pass
 
-    def _on_route_waiting(self, waiting: bool):
-        if waiting:
+    def _on_route_offline(self, offline: bool):
+        if offline:
             i, total = self._route_at
-            pct = i * 100 // max(total, 1)
-            self.hint.emit(f"Route paused at fix {i}/{total} ({pct}%) — waiting for your "
-                           "iPhone. It picks up exactly where it left off.")
+            self.hint.emit(f"Out of touch with your iPhone at {i}/{total} — the route keeps "
+                           "running. Reconnect and it will be wherever the route has got to.")
         else:
-            self.hint.emit("iPhone is back — resuming the route.")
+            self.hint.emit("iPhone is back — catching it up to the route.")
 
     def _route_sleep(self, gen: int, dt: float) -> bool:
         """Sleep up to dt; return True early if this route was stopped/superseded."""
@@ -776,28 +763,46 @@ class MapPanel(QFrame):
             seq = path + path[-2::-1] if self.bounce else path   # forward, then back
             repeat = self.loop or self.bounce
             total = len(seq)
+            # Where you are is a function of the clock, not of how many fixes we
+            # managed to send. Start at 6:30 with twenty minutes of route ahead and
+            # you are at the end at 6:50 — whether the phone was reachable for all
+            # of it, some of it, or none of it. Unplugging costs only the fixes that
+            # could not be delivered while it was away; reconnecting puts the phone
+            # wherever the route has got to by then.
+            started = time.monotonic()
+            sent = -1
             while True:
-                i = 0
-                while i < total:
-                    if self._route_stale(gen):
-                        self._routeDone.emit("Route stopped.")
-                        return
-                    lat, lon = seq[i]
+                if self._route_stale(gen):
+                    self._routeDone.emit("Route stopped.")
+                    return
+                i = int((time.monotonic() - started) / ROUTE_DT)
+                over = i >= total
+                if over and repeat:
+                    i, over = i % total, False
+                idx = min(i, total - 1)
+                if idx != sent:
+                    lat, lon = seq[idx]
                     # read the device through the bridge every fix, so a reconnect
                     # swaps it cleanly instead of us writing to a dead session
-                    if not self.bridge.push(lat, lon):
-                        if not self._await_device(gen):
+                    if self.bridge.push(lat, lon):
+                        sent = idx
+                        self._set_offline(False)
+                        self._walkStep.emit(lat, lon)
+                        self._routeProgress.emit(min(idx + 1, total), total, lat, lon)
+                    else:
+                        # out of touch: the clock runs on without us. Keep trying,
+                        # including past the end, so a phone that comes back late
+                        # still lands on the finished route.
+                        self._set_offline(True)
+                        if self._route_sleep(gen, 1.0):
                             self._routeDone.emit("Route stopped.")
                             return
-                        continue          # same fix again, now that it can land
-                    i += 1
-                    self._walkStep.emit(lat, lon)
-                    self._routeProgress.emit(i, total, lat, lon)
-                    if self._route_sleep(gen, ROUTE_DT):
-                        self._routeDone.emit("Route stopped.")
-                        return
-                if not repeat:
+                        continue
+                if over:
                     self._routeDone.emit("Route complete.")
+                    return
+                if self._route_sleep(gen, 0.2):
+                    self._routeDone.emit("Route stopped.")
                     return
         finally:
             if gen == self._route_gen:

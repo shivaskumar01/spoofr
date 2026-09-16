@@ -325,7 +325,9 @@ class Sidebar(QFrame):
             "defeat court-ordered monitoring can be illegal, how you use it is on you.",
             13, theme.MUTED))
         lay.addSpacing(8)
-        lay.addWidget(_label("Version 1.0  ·  iOS 17–26", 12, theme.MUTED))
+        # deliberately open-ended: nothing here is pinned to an iOS version, and
+        # the old "17–26" went stale the week iOS 27 shipped
+        lay.addWidget(_label("Version 1.0  ·  iOS 17 and later", 12, theme.MUTED))
         return area
 
     # ---- nav + slide ----------------------------------------------------

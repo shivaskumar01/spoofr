@@ -209,9 +209,23 @@ def ensure_tunnel() -> None:
     non-root app attaches."""
     if port_open("127.0.0.1", TUNNELD_PORT) and tunnel_is_healthy():
         return
+    _spawn_tunnel(tunneld_pids())
+
+
+def restart_tunnel() -> None:
+    """Replace the tunnel daemon even if it looks healthy.
+
+    For when the daemon is running and answering but will not produce a tunnel
+    for the phone — it has usually lost track of a device that was replugged, and
+    re-discovering from scratch is what fixes it.
+    """
+    _spawn_tunnel(tunneld_pids())
+
+
+def _spawn_tunnel(stale_pids) -> None:
     if os.geteuid() == 0:
         return  # running as root → core._Tunneld.ensure() will spawn it
-    sh = tunnel_start_cmd(tunneld_pids())
+    sh = tunnel_start_cmd(stale_pids)
     ascmd = sh.replace("\\", "\\\\").replace('"', '\\"')
     r = subprocess.run(["osascript", "-e",
                         f'do shell script "{ascmd}" with administrator privileges'],

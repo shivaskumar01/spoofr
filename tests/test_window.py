@@ -24,7 +24,7 @@ def win(qapp, monkeypatch, tmp_path):
 def _suspend(win):
     """Put the window in the state of a route waiting for the phone."""
     win.panel._playing = True
-    win.panel._route_waiting = True
+    win.panel._route_offline = True
     win.panel.points = [(37.788, -122.407)]
     return win
 
@@ -34,7 +34,7 @@ class TestASuspendedRouteIsNotThrownAway:
         _suspend(win)
         win.panel._redraw_waypoints()
         win._on_device_lost()
-        assert win.panel.route_is_suspended() is True
+        assert win.panel.route_is_playing() is True
         assert win.panel.points, "waypoints were cleared out from under the route"
         assert win.panel._wp_ovs, "waypoint markers were removed"
         assert "paused" in win.hint.text().lower()
@@ -42,7 +42,7 @@ class TestASuspendedRouteIsNotThrownAway:
 
     def test_device_lost_still_clears_up_when_no_route_is_waiting(self, win):
         win.panel._playing = False
-        win.panel._route_waiting = False
+        win.panel._route_offline = False
         win.panel._on_click(37.788, -122.407)
         win._on_device_lost()
         assert win.status.text() == "Disconnected"

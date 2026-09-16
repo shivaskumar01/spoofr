@@ -38,6 +38,8 @@ class DeviceBridge(QObject):
     wirelessResult = Signal(bool, str)       # one-time wireless enable: ok, message
 
     RECONNECT_WINDOW = 120.0                 # seconds to keep trying before giving up
+    CONNECT_ATTEMPTS = 3                     # a first plug-in is often not ready at once
+    CONNECT_BACKOFF = 2.0                    # seconds, multiplied by the attempt number
     HEARTBEAT_EVERY = 15.0                   # s between channel-liveness re-asserts
 
     def __init__(self):
@@ -68,23 +70,63 @@ class DeviceBridge(QObject):
         threading.Thread(target=self._connect_worker, daemon=True).start()
 
     def _connect_worker(self):
+        """Connect, and keep trying rather than throwing a dialog at the first hiccup.
+
+        Most connect failures are transient and self-healing: a phone that has just
+        been plugged in has not finished enumerating, or the tunnel daemon has not
+        discovered it yet. Those used to surface as a modal error that the user had
+        to dismiss and retry by hand — which is most of what made connecting feel
+        unreliable. Only a problem that survives every attempt is worth reporting.
+        """
+        import time
         import core
         import portable
+
+        last = None
+        restarted_tunnel = False
         try:
-            portable.ensure_tunnel()   # brings up the Wi-Fi tunnel (one admin prompt)
-            device = core.connect(on_status=lambda m: self.status.emit(m, theme.AMBER))
-            self.device = device
-            core._log(f"connected: {device.name} iOS {device.ios} via {device.link}")
-            self._emit_connected_status(device)
-            self.connected.emit(device)
-            self._start_monitor()
-        except core.DeveloperModeRequired:
-            self.status.emit("Developer Mode needed", theme.AMBER)
-            self.devModeRequired.emit()
-        except Exception as e:
-            core._log(f"connect failed: {e!r}")
+            for attempt in range(1, self.CONNECT_ATTEMPTS + 1):
+                try:
+                    portable.ensure_tunnel()   # one admin prompt, only if needed
+                    device = core.connect(
+                        on_status=lambda m: self.status.emit(m, theme.AMBER))
+                except core.DeveloperModeRequired:
+                    self.status.emit("Developer Mode needed", theme.AMBER)
+                    self.devModeRequired.emit()
+                    return
+                except PermissionError as e:
+                    last = e                   # admin prompt cancelled: the user meant it
+                    break
+                except Exception as e:
+                    last = e
+                    core._log(f"connect attempt {attempt}/{self.CONNECT_ATTEMPTS}: {e!r}")
+                    if attempt == self.CONNECT_ATTEMPTS:
+                        break
+                    if isinstance(e, core.TunnelNotReady) and not restarted_tunnel:
+                        # the daemon is answering but will not tunnel this phone;
+                        # waiting longer does not fix that, a fresh daemon does
+                        restarted_tunnel = True
+                        self.status.emit("Restarting the tunnel…", theme.AMBER)
+                        try:
+                            portable.restart_tunnel()
+                        except Exception as re:
+                            core._log(f"tunnel restart failed: {re!r}")
+                    else:
+                        self.status.emit("Still looking for your iPhone…", theme.AMBER)
+                        time.sleep(self.CONNECT_BACKOFF * attempt)
+                    continue
+
+                self.device = device
+                core._log(f"connected on attempt {attempt}: {device.name} "
+                          f"iOS {device.ios} via {device.link}")
+                self._emit_connected_status(device)
+                self.connected.emit(device)
+                self._start_monitor()
+                return
+
+            core._log(f"connect gave up after {self.CONNECT_ATTEMPTS} attempts: {last!r}")
             self.status.emit("Not connected", theme.RED)
-            self.failed.emit(str(e))
+            self.failed.emit(str(last))
         finally:
             self._connecting = False
 

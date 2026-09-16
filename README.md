@@ -4,8 +4,9 @@ Set your iPhone's GPS to any point on a map, and every iOS app sees the fake
 location. No jailbreak. You drive it from your Mac, from your phone's browser, or
 from a headless always-on host.
 
-It works on every iOS from 17 through 26.x. Nothing is pinned to a version, because
-it rides Apple's universal personalized developer image.
+It works on iOS 17 and later, including iOS 27. Nothing is pinned to a version: it
+rides Apple's personalized developer disk image, which pymobiledevice3 fetches for
+whatever the phone is running.
 
 ## API keys
 
@@ -41,13 +42,9 @@ in the loop. There is no jailbreak-free way to run this on the phone alone.
    .venv/bin/pip install -e ".[dev]"
    ```
 
-4. Install the `ipsw` CLI. pymobiledevice3 shells out to it to build the developer disk
-   image (iOS 17+). Without it, mounting hangs. Use the cask and clear quarantine:
-
-   ```bash
-   brew install --cask blacktop/tap/ipsw
-   xattr -dr com.apple.quarantine /opt/homebrew/Caskroom/ipsw
-   ```
+That's the whole setup. Older versions of this app also needed the `ipsw` CLI to build
+the developer disk image; pymobiledevice3 11 downloads a personalized image instead, so
+it is no longer required.
 
 ## Going wireless
 
@@ -97,12 +94,15 @@ That's expected, not a bug.
   left. Restore GPS clears the spoof. The panic hotkey ⌃⌥⌘R restores real GPS from
   anywhere.
 
-  You can unplug straight after pressing Start. With wireless on, the route just keeps
-  going over Wi-Fi. If the phone does drop off entirely, the route *pauses* on the fix it
-  was about to send — it isn't cancelled — and picks up from exactly there when the phone
-  comes back; Spoofr reconnects on its own the moment it sees it, so there's nothing to
-  click. Only Stop ends a route. The one thing that must stay put is the Mac: it pushes
-  every fix, so Spoofr has to stay open (it holds off idle sleep while a route plays).
+  You can unplug straight after pressing Start. A route runs on the clock, not on how
+  many fixes got through: start a twenty-minute route at 6:30 and it is finished at 6:50
+  whether the phone was reachable for all of it, some of it, or none of it. Unplug at
+  6:33 and plug back in at 6:49 and the phone jumps to the 6:49 point with a minute to
+  go; leave it unplugged past 6:50 and it lands on the destination, completed, the moment
+  it is reachable again. Spoofr reconnects on its own when it sees the phone, so there is
+  nothing to click, and only Stop ends a route. The one thing that must stay put is the
+  Mac: it pushes every fix, so Spoofr has to stay open (it holds off idle sleep while a
+  route plays).
 - iPhone: click the iPhone tab, scan the QR with your Camera, and control it from Safari.
 
 For a dev run: `.venv/bin/python -m qtui`. The basemap is `DEFAULT_SOURCE` in
