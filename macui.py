@@ -78,7 +78,7 @@ class _Controller(NSObject):
                     it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                         f"Go to  {p['name']}", "goTo:", "")
                     it.setTarget_(self)
-                    it.setRepresentedObject_(f"{float(p['lat'])},{float(p['lon'])}")
+                    it.setRepresentedObject_(f"{float(p['lat'])},{float(p['lon'])},{p['name']}")
                     menu.addItem_(it)
                 except Exception:
                     continue
@@ -99,10 +99,11 @@ class _Controller(NSObject):
 
     def goTo_(self, sender):
         try:
-            lat, lon = (float(x) for x in str(sender.representedObject()).split(","))
+            la, lo, name = (str(sender.representedObject()).split(",", 2) + [""])[:3]
+            lat, lon = float(la), float(lo)
         except Exception:
             return
-        self._app._post(lambda: self._app._use_place(lat, lon))
+        self._app._post(lambda: self._app._use_place(lat, lon, name))
 
     def restore_(self, sender):
         self._app._post(self._app.restore_real_gps)

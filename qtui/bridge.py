@@ -10,10 +10,14 @@ So nothing here ever touches widgets directly; the window just connects slots.
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal
 
 from . import theme
+
+if TYPE_CHECKING:
+    import core
 
 # `core` / `portable` pull in all of pymobiledevice3 (heavy). They are imported
 # lazily inside the worker threads so launching the app stays instant, the first
@@ -199,6 +203,8 @@ class DeviceBridge(QObject):
                 tag = " (panic)" if panic else ""
                 self.hint.emit(f"Real GPS restored{tag}. iOS reacquires in a few seconds.")
                 core._log(f"real GPS restored{tag}")
+            except core.Cancelled:
+                return                 # a newer restore/stop took over; not a dead session
             except Exception as e:
                 core._log(f"restore failed: {e!r}")
                 self.hint.emit(f"Restore failed: {e}")

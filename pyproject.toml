@@ -1,7 +1,7 @@
 [project]
 name = "spoofr"
-version = "1.0.0"
-description = "Spoofr — spoof your iPhone's GPS to anywhere on the map (iOS 17–26, no jailbreak)."
+version = "1.1.0"
+description = "Spoofr — spoof your iPhone's GPS to anywhere on the map (iOS 17 and later, no jailbreak)."
 requires-python = ">=3.11"
 dependencies = [
   # Pinned to 9.x this app spent two major versions behind upstream, on a

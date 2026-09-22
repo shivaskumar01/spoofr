@@ -12,9 +12,10 @@ import time
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
 
 from . import theme
+from .widgets import Dot, button
 
 
 class PortableController(QObject):
@@ -80,68 +81,76 @@ class PortableView(QFrame):
 
         card = QFrame()
         card.setObjectName("Card")
-        card.setFixedWidth(440)
+        card.setFixedWidth(420)
         c = QVBoxLayout(card)
-        c.setContentsMargins(46, 30, 46, 30)
+        c.setContentsMargins(40, 34, 40, 30)
+        c.setSpacing(0)
         c.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
         title = QLabel("Control from your iPhone")
         title.setFont(theme.ui_font(20, weight=700))
         title.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         c.addWidget(title)
+        c.addSpacing(6)
 
-        blurb = QLabel("Open the Camera on your iPhone and point it at this code.\n"
-                       "Your phone just needs to be on the same Wi-Fi.")
+        blurb = QLabel("Point your iPhone’s Camera at this code.\n"
+                       "The phone just needs to be on the same Wi-Fi.")
         blurb.setFont(theme.ui_font(13))
         blurb.setStyleSheet(f"color: {theme.MUTED};")
         blurb.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         c.addWidget(blurb)
-        c.addSpacing(16)
+        c.addSpacing(22)
 
         self.qr = QLabel("Starting…")
-        self.qr.setFixedSize(248, 248)
+        self.qr.setFixedSize(232, 232)
         self.qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.qr.setStyleSheet(f"color: {theme.MUTED}; background: #ffffff; border-radius: 12px;")
+        self.qr.setStyleSheet("color: #5b6780; background: #ffffff; border-radius: 16px;")
         c.addWidget(self.qr, alignment=Qt.AlignmentFlag.AlignHCenter)
-        c.addSpacing(12)
+        c.addSpacing(18)
 
-        self.url = QLabel("")
-        self.url.setFont(theme.ui_font(12))
-        self.url.setStyleSheet(f"color: {theme.TEXT};")
-        self.url.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self.url.setWordWrap(True)
-        c.addWidget(self.url)
-
-        self.copy_btn = QPushButton("Copy link")
-        self.copy_btn.setProperty("variant", "soft")
-        self.copy_btn.setFixedHeight(32)
-        self.copy_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        c.addWidget(self.copy_btn, alignment=Qt.AlignmentFlag.AlignHCenter)
-        c.addSpacing(10)
-
-        self.status = QLabel("●  Starting the phone server…")
+        st = QHBoxLayout(); st.setSpacing(8)
+        st.addStretch(1)
+        self._dot = Dot(theme.AMBER, 8)
+        self.status = QLabel("Starting the phone server…")
         self.status.setFont(theme.ui_font(13, weight=600))
-        self.status.setStyleSheet(f"color: {theme.AMBER};")
-        self.status.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        c.addWidget(self.status)
+        st.addWidget(self._dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        st.addWidget(self.status)
+        st.addStretch(1)
+        c.addLayout(st)
+        c.addSpacing(16)
+
+        link = QHBoxLayout(); link.setSpacing(8)
+        self.url = QLabel("")
+        self.url.setFont(theme.mono_font(11))
+        self.url.setStyleSheet(f"color: {theme.MUTED};")
+        self.url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.copy_btn = button("Copy link", "soft", height=30)
+        link.addWidget(self.url, 1)
+        link.addWidget(self.copy_btn)
+        c.addLayout(link)
 
         outer.addWidget(card)
 
     def reset(self):
-        self.qr.setText("Starting…"); self.qr.setPixmap(QPixmap())
+        self.qr.setPixmap(QPixmap()); self.qr.setText("Starting…")
         self.url.setText("")
-        self.set_status("●  Starting the phone server…", theme.AMBER)
+        self.set_status("Starting the phone server…", theme.AMBER)
 
     def show_qr(self, png_path: str, url: str):
         if png_path:
             pix = QPixmap(png_path)
             if not pix.isNull():
-                self.qr.setPixmap(pix.scaled(
-                    232, 232, Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation))
-                self.qr.setText("")
-        self.url.setText(url or "")
+                dpr = self.devicePixelRatioF() or 1.0
+                side = round(216 * dpr)
+                pix = pix.scaled(side, side, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.FastTransformation)   # crisp modules
+                pix.setDevicePixelRatio(dpr)
+                self.qr.setPixmap(pix)
+        # the token makes the full URL long; show host:port, copy the whole thing
+        short = (url or "").split("/?")[0].replace("http://", "")
+        self.url.setText(short)
+        self.url.setToolTip(url or "")
 
     def set_status(self, text: str, color: str):
         self.status.setText(text)
-        self.status.setStyleSheet(f"color: {color};")
+        self._dot.set_color(color)

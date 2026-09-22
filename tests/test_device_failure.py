@@ -151,6 +151,35 @@ def test_clear_suspends_so_nothing_re_spoofs_behind_it():
     assert loc.clears == 1
 
 
+def test_a_stop_during_restore_does_not_cancel_the_restore():
+    """suspend() cuts fixes short. A stop or a second panic press landing while
+    Restore GPS is in flight used to cancel the restore itself, which surfaced
+    as a failure and started a pointless reconnect."""
+    class SlowClear(FakeLocation):
+        async def clear(self):
+            await asyncio.sleep(0.15)
+            self.clears += 1
+
+    loc = SlowClear()
+    dev = make_device(loc)
+    errors = []
+
+    def restore():
+        try:
+            dev.clear()
+        except Exception as e:          # pragma: no cover - the failure mode
+            errors.append(e)
+
+    t = threading.Thread(target=restore)
+    t.start()
+    time.sleep(0.05)
+    dev.suspend()                       # e.g. stop_motion() from a second press
+    t.join(2.0)
+    assert not t.is_alive()
+    assert errors == [], f"restore was cancelled: {errors!r}"
+    assert loc.clears == 1
+
+
 def test_close_cannot_hang_on_quit():
     dev = make_device(FakeLocation(hang_set=True))
 

@@ -3,43 +3,57 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#111726">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Spoofr</title>
   <link href="maplibre-gl.css" rel="stylesheet">
   <link href="style.css" rel="stylesheet">
 </head>
 <body>
   <header id="bar">
-    <div class="mark"><span class="logo">◉</span>&nbsp;Spoofr</div>
-    <div class="pill"><span id="dot" class="dot">●</span><span id="status">Not connected</span></div>
+    <div class="mark"><span class="logo">◉</span>&nbsp;&nbsp;Spoofr</div>
+    <div class="pill"><span id="dot" class="dot"></span><span id="status">Not connected</span></div>
     <div class="actions">
       <button id="restore" class="btn ghost">Restore</button>
       <button id="connect" class="btn primary">Connect</button>
     </div>
   </header>
 
-  <div id="controls">
-    <div id="seg" class="seg">
-      <button data-mode="teleport" class="on">Teleport</button>
-      <button data-mode="route">Route</button>
-    </div>
-    <div id="route-ctl" class="route-ctl hidden">
-      <span class="lbl">Speed</span>
-      <input id="speed" type="range" min="0.5" max="35" step="0.1" value="1.4">
-      <span id="speed-val">1.4 m/s</span>
-      <button id="start" class="btn primary sm">Start</button>
-      <button id="stop" class="btn soft sm">Stop</button>
-      <button id="clear" class="btn soft sm">Clear</button>
-    </div>
-  </div>
-
   <div id="map"></div>
 
-  <div id="search">
-    <input id="q" type="search" placeholder="Search address or city" autocomplete="off" autocorrect="off">
-    <button id="go" class="btn primary sm">Go</button>
+  <div id="seg" class="seg float">
+    <button data-mode="teleport" class="on">Teleport</button>
+    <button data-mode="route">Route</button>
+  </div>
+
+  <div id="search" class="float">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#8b96ac" stroke-width="1.7" stroke-linecap="round">
+      <circle cx="6.9" cy="6.9" r="4.8"/><line x1="10.4" y1="10.4" x2="14" y2="14"/>
+    </svg>
+    <input id="q" type="search" enterkeyhint="search" placeholder="Search a place, or lat, lon" autocomplete="off" autocorrect="off">
   </div>
 
   <button id="setbtn" class="setbtn hidden">Set location here</button>
+
+  <div id="route-ctl" class="float hidden">
+    <div class="row">
+      <div class="seg" id="pace">
+        <button data-mps="1.4" class="on">Walk</button>
+        <button data-mps="3.3">Run</button>
+        <button data-mps="6">Cycle</button>
+        <button data-mps="13.5">Drive</button>
+      </div>
+      <span id="speed-val">3.1 mph</span>
+    </div>
+    <input id="speed" type="range" min="0.5" max="35" step="0.1" value="1.4">
+    <div class="row">
+      <span id="eta">Tap the map to set a destination</span>
+      <button id="clear" class="btn soft">Clear</button>
+      <button id="start" class="btn primary">Start</button>
+    </div>
+  </div>
+
   <div id="hint"></div>
 
   <div id="wizard" class="wizard hidden">
@@ -52,7 +66,7 @@
         <li>Tap <b>Restart</b> when prompted</li>
         <li>After reboot, unlock and tap <b>Turn On</b> (enter passcode)</li>
       </ol>
-      <div id="wiz-status" class="wiz-status">●&nbsp;&nbsp;Waiting for Developer Mode…</div>
+      <div id="wiz-status" class="wiz-status">Waiting for Developer Mode…</div>
       <button id="wiz-cancel" class="btn ghost">Cancel</button>
     </div>
   </div>

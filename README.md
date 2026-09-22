@@ -17,9 +17,10 @@ token (`SPOOFER_TOKEN`) is generated for you, so there is nothing to input.
 
 Spoofr is a native Mac app (PySide6, in `qtui/`) with a This Mac / iPhone switch.
 
-- This Mac: a dark, GPU-smooth map. Click to drop a pin and set your location, walk
-  with the joystick or the arrow keys, or drop waypoints and walk a route (optionally
-  snapped to real roads).
+- This Mac: a calm, full-bleed dark map with floating controls. Click to drop a pin and
+  set your location, walk with the pad or the arrow keys, or click a destination and
+  walk a route (optionally along real roads), with the distance and time shown before
+  you press Start.
 - iPhone: it shows a QR code. Scan it and control everything from your phone's browser
   over the same Wi-Fi. The Mac stays the host. The phone is the remote.
 
@@ -85,14 +86,15 @@ That's expected, not a bug.
 
 - This Mac: Connect, click the map, then Set location here. Route mode needs one click:
   your iPhone is already somewhere, so that click is the destination and the route starts
-  from where the phone is. Extra clicks add stops along the way. Pick a pace (Walk, Run,
-  Cycle, or Drive, with loop or bounce, and GPX import and export). With "Snap route to
-  roads" on, the route follows
-  real streets for the pace you picked — a walk takes footpaths, a drive takes roads —
-  and each fix is pushed once a second, like a real GPS. A cyan track trails behind the
-  marker so you can see the progress, and the hint bar shows the percentage and time
+  from where the phone is. Extra clicks add stops along the way (↶ removes the last one).
+  The route card at the bottom of the map picks the pace (Walk, Run, Cycle, or Drive) and
+  shows the distance and time before you start; loop, bounce, and GPX import and export
+  live in ☰ ▸ Route. With "Follow real roads" on, the planned line redraws along real
+  streets for the pace you picked — a walk takes footpaths, a drive takes roads — and
+  Start plays exactly the line on screen. Each fix is pushed once a second, like a real
+  GPS. A cyan track trails behind the marker, and the card shows the percentage and time
   left. Restore GPS clears the spoof. The panic hotkey ⌃⌥⌘R restores real GPS from
-  anywhere.
+  anywhere. Places you set are kept in ☰ ▸ Places under their real names.
 
   You can unplug straight after pressing Start. A route runs on the clock, not on how
   many fixes got through: start a twenty-minute route at 6:30 and it is finished at 6:50

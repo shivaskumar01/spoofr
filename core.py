@@ -81,6 +81,10 @@ CLOSE_TIMEOUT = 5.0      # tearing the session down on disconnect/quit
 LOCK_TIMEOUT = 30.0      # ceiling on waiting for another caller's device op
 MOUNT_TIMEOUT = 300.0    # developer disk image, including a download on a new iOS
 RSD_TIMEOUT = 45.0       # how long to let the daemon find and tunnel this phone
+USBMUX_TIMEOUT = 5.0     # listing devices: a local socket, should be instant
+LOCKDOWN_TIMEOUT = 15.0  # a lockdown round-trip (dev-mode status, reveal, wireless)
+# the whole connect pipeline, as a backstop over the per-step bounds above
+CONNECT_TIMEOUT = MOUNT_TIMEOUT + RSD_TIMEOUT + 120.0
 
 StatusFn = Callable[[str], None]
 
@@ -335,17 +339,22 @@ class Device:
         suspend() runs first so no in-flight or queued fix can re-spoof the phone
         behind us. Same idle-channel recovery as set(): the DVT channel may have
         been torn down while sitting connected, so on failure rebuild and retry once.
+
+        The clear itself is deliberately not registered with suspend(): suspend
+        exists to cut *fixes* short, and a stop or a second panic press landing
+        mid-restore used to cancel the restore instead, which then read as a
+        dead session and kicked off a reconnect.
         """
         self.suspend()
         self._acquire("restore real GPS")
         try:
             try:
-                self._run(self._location.clear(), CLEAR_TIMEOUT)
+                _loop.run(self._location.clear(), CLEAR_TIMEOUT)
             except Exception as first:
                 _log(f"location clear failed ({first!r}); reopening DVT/location channel", exc=True)
                 try:
-                    self._run(self._reopen(), REOPEN_TIMEOUT)
-                    self._run(self._location.clear(), CLEAR_TIMEOUT)
+                    _loop.run(self._reopen(), REOPEN_TIMEOUT)
+                    _loop.run(self._location.clear(), CLEAR_TIMEOUT)
                 except Exception as second:
                     _log(f"reopen+retry failed: {second!r}", exc=True)
                     raise
@@ -393,7 +402,7 @@ def connect(on_status: Optional[StatusFn] = None) -> Device:
 
     say("Starting the tunnel…")
     _tunneld.ensure()
-    return _loop.run(_open(say))
+    return _loop.run(_open(say), CONNECT_TIMEOUT)
 
 
 def _kinds_to_link(kinds: set[str]) -> str:
@@ -411,7 +420,7 @@ def link_status(serial: str) -> Optional[str]:
     if not serial:
         return None
     try:
-        return _loop.run(_link_status(serial))
+        return _loop.run(_link_status(serial), USBMUX_TIMEOUT)
     except Exception:
         return None
 
@@ -429,7 +438,7 @@ def visible_kinds() -> str:
     """How *any* iPhone is visible right now ("" if none), the idle pre-flight
     that lights up Connect before the user clicks. Blocking, worker thread."""
     try:
-        return _loop.run(_visible_kinds())
+        return _loop.run(_visible_kinds(), USBMUX_TIMEOUT)
     except Exception:
         return ""
 
@@ -447,7 +456,7 @@ def enable_wireless() -> None:
     "Show this iPhone when on Wi-Fi"). Needs the cable for this one call; after
     it, discovery/lockdown/tunnel all work cable-free on the same network.
     Raises SpooferError with a user-facing message on failure."""
-    _loop.run(_enable_wireless())
+    _loop.run(_enable_wireless(), 3 * LOCKDOWN_TIMEOUT + USBMUX_TIMEOUT)
 
 
 async def _enable_wireless():
@@ -476,8 +485,12 @@ async def _enable_wireless():
 
 
 def developer_mode_status() -> Optional[bool]:
-    """True/False if an iPhone is connected, else None. Over USB, no root/tunnel."""
-    return _loop.run(_dev_mode_status())
+    """True/False if an iPhone is connected, else None. Over USB, no root/tunnel.
+    None too if the phone doesn't answer in time: the wizard just polls again."""
+    try:
+        return _loop.run(_dev_mode_status(), LOCKDOWN_TIMEOUT)
+    except SpooferError:
+        return None
 
 
 async def _dev_mode_status() -> Optional[bool]:
@@ -502,7 +515,7 @@ async def _dev_mode_status() -> Optional[bool]:
 def reveal_developer_mode() -> None:
     """Surface the (hidden) Developer Mode toggle in the iPhone's Settings."""
     try:
-        _loop.run(_reveal_dev_mode())
+        _loop.run(_reveal_dev_mode(), LOCKDOWN_TIMEOUT)
     except Exception:
         pass
 
@@ -548,9 +561,10 @@ async def _open(say: StatusFn) -> Device:
             wireless_on = False
         say("Checking Developer Mode…")
         try:
-            dev_mode_on = bool(await lockdown.get_developer_mode_status())
+            dev_mode_on = bool(await asyncio.wait_for(
+                lockdown.get_developer_mode_status(), LOCKDOWN_TIMEOUT))
         except Exception:
-            dev_mode_on = True  # query unsupported → let the mount decide
+            dev_mode_on = True  # query unsupported (or slow) → let the mount decide
         if not dev_mode_on:
             raise DeveloperModeRequired("Developer Mode is off on the iPhone.")
         say("Preparing the developer disk image (first time can take a few minutes)…")
@@ -565,7 +579,10 @@ async def _open(say: StatusFn) -> Device:
         except DeveloperModeIsNotEnabledError:
             raise DeveloperModeRequired("Developer Mode is off on the iPhone.") from None
     finally:
-        await lockdown.close()
+        try:
+            await asyncio.wait_for(lockdown.close(), 5)
+        except Exception:
+            pass
 
     rsd = await _wait_for_rsd(udid, say)
 

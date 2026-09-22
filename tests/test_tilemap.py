@@ -75,17 +75,22 @@ def test_tile_scale_comes_from_the_tile_not_the_display(tmap):
 
 
 def test_recolour_turns_a_light_basemap_dark(tmap):
+    """Paper-white land becomes exactly the map canvas; black label ink becomes
+    the light end of the ramp, so labels stay legible on the dark map."""
     from PySide6.QtGui import QColor, QPixmap
-    assert tmap._source.recolor, "the default source is a light map we invert"
-    white = QPixmap(TILE, TILE)
-    white.fill(QColor("#ffffff"))
-    out = tmap._prepare(white).toImage()
-    assert QColor(out.pixel(8, 8)).lightness() < 20, "white should invert to near-black"
+    from qtui import theme
+    assert tmap._source.recolor, "the default source is a light map we recolour"
 
-    black = QPixmap(TILE, TILE)
-    black.fill(QColor("#000000"))
-    out = tmap._prepare(black).toImage()
-    assert QColor(out.pixel(8, 8)).lightness() > 235, "black should invert to near-white"
+    def through(hex_):
+        pm = QPixmap(TILE, TILE)
+        pm.fill(QColor(hex_))
+        return QColor(tmap._prepare(pm).toImage().pixel(8, 8))
+
+    assert through("#ffffff").name() == QColor(theme.MAP_BG).name()
+    assert through("#000000").name() == QColor(theme.MAP_INK).name()
+    # monotonic: a darker source pixel never comes out darker than a lighter one
+    greys = [through(f"#{v:02x}{v:02x}{v:02x}").lightness() for v in range(0, 256, 17)]
+    assert greys == sorted(greys, reverse=True)
 
 
 def test_no_source_depends_on_an_api_key(tmap):

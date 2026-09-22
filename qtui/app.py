@@ -1,9 +1,9 @@
 """Spoofr, native PySide6 application shell.
 
-The window chrome (header, status pill, Connect/Restore, hint bar) wrapped around
-a MapPanel. Connect/Restore drive the device through a DeviceBridge on worker
-threads; teleport + search live in the MapPanel. Route/places/QR land in later
-phases. The device core (core.py) is shared with the legacy Tk app unchanged.
+The window chrome (header with the status pill, This Mac / iPhone switch and
+Connect / Restore; a footer with the hint line and the live coordinates) around
+a full-bleed MapPanel. Connect/Restore drive the device through a DeviceBridge
+on worker threads; everything on the map lives in the MapPanel.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 import sys
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton,
@@ -20,10 +20,10 @@ from PySide6.QtWidgets import (
 
 from . import store, theme
 from .bridge import DeviceBridge
-from .controlbar import ControlBar
 from .mapview import MapPanel
 from .portable_view import PortableController, PortableView
 from .sidebar import Sidebar
+from .widgets import Dot, ElidedLabel, Segmented, button, hairline, icon_menu, repolish
 from .wizard import DevModeWizard
 
 _ARROWS = {Qt.Key.Key_Up: "Up", Qt.Key.Key_Down: "Down",
@@ -35,14 +35,31 @@ START_CITIES = [
 ]
 
 
-def _btn(text: str, variant: str = "primary", width: int | None = None, height: int = 36) -> QPushButton:
-    b = QPushButton(text)
-    b.setProperty("variant", variant)
-    b.setCursor(Qt.CursorShape.PointingHandCursor)
-    b.setFixedHeight(height)
-    if width:
-        b.setFixedWidth(width)
-    return b
+class StatusPill(QFrame):
+    """Dot + one line of status; long device names elide instead of pushing
+    the header's buttons off the edge."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("Status")
+        self.setStyleSheet(f"#Status {{ background: {theme.ELEV}; border-radius: 15px; }}")
+        self.setFixedHeight(30)
+        self.setMaximumWidth(380)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 0, 14, 0); lay.setSpacing(8)
+        self.dot = Dot(theme.GREY, 8)
+        self.label = ElidedLabel("Not connected")
+        self.label.setFont(theme.ui_font(13, weight=500))
+        lay.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self.label, 1)
+
+    def set(self, text: str, color: str):
+        self.label.setText(text)
+        self.dot.set_color(color)
+        self.label.update()
+
+    def text(self) -> str:
+        return self.label.text()
 
 
 class MainWindow(QWidget):
@@ -50,8 +67,8 @@ class MainWindow(QWidget):
         super().__init__()
         self.setObjectName("Root")
         self.setWindowTitle("Spoofr")
-        self.resize(1060, 780)
-        self.setMinimumSize(860, 600)
+        self.resize(1180, 800)
+        self.setMinimumSize(900, 620)
         self._wizard = None
 
         # device bridge: blocking core.* calls run off the GUI thread
@@ -61,38 +78,24 @@ class MainWindow(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-
         root.addWidget(self._build_header())
-        hair = QFrame(); hair.setObjectName("Hairline"); hair.setFixedHeight(1)
-        root.addWidget(hair)
+        root.addWidget(hairline())
 
-        # body (built first so the control bar can drive the panel)
-        self.body = QWidget()
-        bl = QVBoxLayout(self.body)
-        bl.setContentsMargins(14, 6, 14, 6)
-        bl.setSpacing(0)
+        # body: the map (This Mac) ↔ the QR card (iPhone)
         self.panel = MapPanel(self.bridge, self.settings)
-        bl.addWidget(self.panel, 1)
-        self.hint = QLabel("Click Connect to drive your iPhone from this Mac.")
-        self.hint.setStyleSheet(f"color: {theme.MUTED};")
-        self.hint.setFont(theme.ui_font(12))
-        self.hint.setContentsMargins(8, 6, 8, 6)
-        bl.addWidget(self.hint)
-
-        self.controlbar = ControlBar(self.panel)
-        root.addWidget(self.controlbar)
-
-        # body stack: map (This Mac) ↔ QR card (iPhone)
         self.portable = PortableController()
         self.portable_view = PortableView()
         self.stack = QStackedWidget()
-        self.stack.addWidget(self.body)
+        self.stack.addWidget(self.panel)
         self.stack.addWidget(self.portable_view)
         root.addWidget(self.stack, 1)
 
+        root.addWidget(hairline())
+        root.addWidget(self._build_footer())
+
         # open over a familiar city until the phone connects
         lat, lon = random.choice(START_CITIES)
-        self.panel.map.set_view(lat, lon, 11)
+        self.panel.map.set_view(lat, lon, 12)
 
         # slide-out side menu (overlay child of the window)
         self.sidebar = Sidebar(self.settings, self)
@@ -109,12 +112,18 @@ class MainWindow(QWidget):
         self.bridge.reconnecting.connect(self._on_reconnecting)
         self.bridge.visible.connect(self._on_visible)
         self.bridge.wirelessResult.connect(self._on_wireless_result)
-        self.sidebar.goWireless.connect(self._go_wireless)
+        self.bridge.currentLocation.connect(self.panel.locate_me)
+        # the liveness monitor re-asserts this fix to prove the channel still works
+        self.bridge.heartbeat_source = self.panel.heartbeat_point
         self.panel.hint.connect(self.set_hint)
+        self.panel.readout.connect(self._set_readout)
         self.panel.committed.connect(self.sidebar.add_recent)
+        self.panel.placeNamed.connect(self.sidebar.name_recent)
         self.connect_btn.clicked.connect(self._on_connect_btn)
         self.restore_btn.clicked.connect(self._on_restore)
         self.menu_btn.clicked.connect(self.sidebar.toggle)
+        self.app_mode.changed.connect(self._on_app_mode)
+        self.sidebar.goWireless.connect(self._go_wireless)
         self.sidebar.usePlace.connect(self._use_place)
         self.sidebar.saveCurrent.connect(self._save_current)
         self.sidebar.brightnessChanged.connect(self.panel.set_brightness)
@@ -125,11 +134,6 @@ class MainWindow(QWidget):
         self.sidebar.bounceToggled.connect(self.panel.set_bounce)
         self.sidebar.importGpx.connect(self._import_gpx)
         self.sidebar.exportGpx.connect(self.panel.export_gpx)
-        self.panel.requestTeleport.connect(lambda: self.controlbar.set_mode("Teleport"))
-        self.bridge.currentLocation.connect(self.panel.locate_me)
-        # the liveness monitor re-asserts this fix to prove the channel still works
-        self.bridge.heartbeat_source = self.panel.heartbeat_point
-        self.controlbar.appModeChanged.connect(self._on_app_mode)
         self.portable.qrReady.connect(self._on_qr_ready)
         self.portable.statusUpdate.connect(self._on_portable_status)
         self.portable.failed.connect(self._on_portable_failed)
@@ -152,45 +156,79 @@ class MainWindow(QWidget):
     def _build_header(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("Bar")
-        bar.setFixedHeight(60)
+        bar.setFixedHeight(56)
         h = QHBoxLayout(bar)
-        h.setContentsMargins(14, 0, 20, 0)
+        h.setContentsMargins(12, 0, 16, 0)
         h.setSpacing(0)
 
-        self.menu_btn = _btn("☰", "icon", width=40, height=36)
-        f = self.menu_btn.font(); f.setPointSize(18); self.menu_btn.setFont(f)
+        self.menu_btn = QPushButton()
+        self.menu_btn.setProperty("variant", "icon")
+        self.menu_btn.setIcon(QIcon(icon_menu()))
+        self.menu_btn.setIconSize(QSize(18, 18))
+        self.menu_btn.setFixedSize(36, 36)
+        self.menu_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.menu_btn.setToolTip("Places, route options and settings")
         h.addWidget(self.menu_btn)
         h.addSpacing(8)
 
-        mark = QLabel("◉  Spoofr")
+        mark = QLabel(f"<span style='color:{theme.BLUE}'>◉</span>&nbsp;&nbsp;Spoofr")
         mark.setFont(theme.ui_font(15, weight=700))
-        mark.setStyleSheet(f"color: {theme.TEXT};")
-        # tint the glyph by rich text
-        mark.setText(f"<span style='color:{theme.BLUE}'>◉</span>&nbsp;&nbsp;Spoofr")
         h.addWidget(mark)
         h.addSpacing(16)
 
-        pill = QFrame(); pill.setObjectName("Pill")
-        pl = QHBoxLayout(pill); pl.setContentsMargins(13, 6, 15, 6); pl.setSpacing(7)
-        self.dot = QLabel("●"); self.dot.setStyleSheet(f"color: {theme.GREY}; font-size: 12px;")
-        self.status = QLabel("Not connected"); self.status.setFont(theme.ui_font(13))
-        pl.addWidget(self.dot); pl.addWidget(self.status)
-        h.addWidget(pill)
+        self.pill = StatusPill()
+        h.addWidget(self.pill, 1, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        h.addSpacing(16)
 
-        h.addStretch(1)
-        self.restore_btn = _btn("Restore GPS", "ghost", width=118)
-        self.connect_btn = _btn("Connect", "primary", width=118)
+        self.app_mode = Segmented(["This Mac", "iPhone"], height=32, font_pt=12)
+        self.app_mode.setToolTip("Drive the iPhone from this Mac, or hand control to the "
+                                 "phone itself with a QR code")
+        h.addWidget(self.app_mode)
+        h.addSpacing(12)
+        self.restore_btn = button("Restore GPS", "ghost", height=32)
+        self.restore_btn.setMinimumWidth(110)
+        self.restore_btn.setToolTip("Put the iPhone back on its real GPS (⌃⌥⌘R from anywhere)")
+        self.connect_btn = button("Connect", "primary", height=32)
+        self.connect_btn.setMinimumWidth(118)
         h.addWidget(self.restore_btn)
-        h.addSpacing(10)
+        h.addSpacing(8)
         h.addWidget(self.connect_btn)
         return bar
 
+    def _build_footer(self) -> QWidget:
+        bar = QFrame()
+        bar.setObjectName("Bar")
+        bar.setFixedHeight(30)
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(16, 0, 16, 0)
+        h.setSpacing(16)
+        self.hint = ElidedLabel("Click Connect to drive your iPhone from this Mac.")
+        self.hint.setFont(theme.ui_font(12))
+        self.hint.setStyleSheet(f"color: {theme.MUTED};")
+        h.addWidget(self.hint, 1)
+        self.readout = QLabel("")
+        self.readout.setFont(theme.mono_font(11))
+        self.readout.setStyleSheet(f"color: {theme.LIVE_HI};")
+        self.readout.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.readout.setToolTip("Where your iPhone is (select to copy)")
+        h.addWidget(self.readout)
+        return bar
+
+    # the pill is the one status surface; `status` stays for callers/tests that
+    # read it back
+    @property
+    def status(self) -> StatusPill:
+        return self.pill
+
     def set_status(self, text: str, color: str):
-        self.status.setText(text)
-        self.dot.setStyleSheet(f"color: {color}; font-size: 12px;")
+        self.pill.set(text, color)
 
     def set_hint(self, text: str):
         self.hint.setText(text)
+        self.hint.update()
+
+    def _set_readout(self, text: str):
+        self.readout.setText(f"◉  {text}" if text else "")
 
     # ---- connect / restore ---------------------------------------------
 
@@ -201,12 +239,12 @@ class MainWindow(QWidget):
         if state == "connecting":
             b.setText("Connecting…"); b.setProperty("variant", "primary"); b.setEnabled(False)
         elif state == "disconnect":
-            b.setText("Disconnect"); b.setProperty("variant", "danger"); b.setEnabled(True)
+            b.setText("Disconnect"); b.setProperty("variant", "ghost"); b.setEnabled(True)
         elif state == "reconnecting":
             b.setText("Reconnecting…"); b.setProperty("variant", "ghost"); b.setEnabled(True)
         else:
             b.setText("Connect"); b.setProperty("variant", "primary"); b.setEnabled(True)
-        b.style().unpolish(b); b.style().polish(b)
+        repolish(b)
 
     def _on_connect_btn(self):
         if self.bridge.is_reconnecting():
@@ -227,8 +265,8 @@ class MainWindow(QWidget):
         self.panel.show_walk_pad(False)
         self._set_connect_state("connect")
         self.set_status("Not connected", theme.GREY)
-        self.set_hint("Disconnected, your set location stays on the iPhone. "
-                      "Reconnect and Restore GPS to reset it.")
+        self.set_hint("Disconnected. Your set location stays on the iPhone; "
+                      "reconnect and Restore GPS to reset it.")
 
     def _on_device_lost(self):
         # gone for good (reconnect gave up or was stopped), spoof persists on the phone
@@ -236,7 +274,7 @@ class MainWindow(QWidget):
         if self.panel.route_is_playing():
             # a route is mid-walk and holding. Keep it, and its waypoints, and let
             # the idle visibility poll reconnect as soon as the phone is back —
-            # unplugging should cost you the walk you were halfway through.
+            # unplugging should not cost you the walk you were halfway through.
             self._set_connect_state("connect")
             self.set_status("Waiting for your iPhone", theme.AMBER)
             self.set_hint("Route paused. Plug the iPhone back in, or bring it back onto "
@@ -246,8 +284,8 @@ class MainWindow(QWidget):
         self.panel.show_walk_pad(False)
         self._set_connect_state("connect")
         self.set_status("Disconnected", theme.GREY)
-        self.set_hint("Lost the iPhone, your set location stays on the phone. "
-                      "Reconnect and Restore GPS to reset it.")
+        self.set_hint("Lost the iPhone. Your set location stays on the phone; "
+                      "reconnect and Restore GPS to reset it.")
 
     def _on_reconnecting(self, attempt: int):
         self._set_connect_state("reconnecting")
@@ -259,7 +297,7 @@ class MainWindow(QWidget):
         b = self.bridge
         if b.is_connected() or b._connecting or b.is_reconnecting():
             return
-        if self.controlbar.app_mode.value() == "iPhone":
+        if self.app_mode.value() == "iPhone":
             return
         if kinds and self.panel.route_is_playing():
             # a paused route wants its phone back; don't make the user click
@@ -272,20 +310,25 @@ class MainWindow(QWidget):
             self.set_status("Not connected", theme.GREY)
 
     def _on_connected(self, device):
+        if self.app_mode.value() == "iPhone":
+            # a connect that was already running when the user switched to iPhone
+            # mode: the phone's server owns the device now, so let go at once
+            self.bridge.drop_device()
+            return
         self._set_connect_state("disconnect")
         self.panel.show_walk_pad(True)
         spoof = self.settings.get("active_spoof")
         if self.panel.route_is_playing():
             # the route's next fix is the right position; re-asserting an older
             # one here would yank the phone backwards
-            self.set_hint("Reconnected — the route picks up where it left off.")
+            self.set_hint("Reconnected. The route picks up where it left off.")
         elif spoof:
             self.panel.restore_active_spoof(spoof["lat"], spoof["lon"])
-            self.set_hint("Your iPhone is still set to your last location, Restore GPS to reset, "
-                          "or pick a new spot.")
+            self.set_hint("Your iPhone is still set to your last location. Restore GPS to "
+                          "reset it, or pick a new spot.")
         else:
             self.bridge.locate()         # fly the map to the user's current location
-            self.set_hint("Connected, finding your location… drop a pin or search to move your iPhone.")
+            self.set_hint("Connected. Finding your location… drop a pin or search to move your iPhone.")
         # remember + surface whether the cable is still required
         wireless_on = bool(getattr(device, "wireless_on", False))
         self.settings["wireless_on"] = wireless_on
@@ -298,23 +341,29 @@ class MainWindow(QWidget):
 
     # ---- places + walking ----------------------------------------------
 
-    def _use_place(self, lat: float, lon: float):
+    def _use_place(self, lat: float, lon: float, label: str = ""):
         self.sidebar.close_menu()
-        self.panel.goto(lat, lon)
+        if self.app_mode.value() == "iPhone":
+            self.set_hint("Switch to This Mac to set a location from here.")
+            return
         if self.bridge.is_connected():
-            self.bridge.set_location(lat, lon)
+            self.panel.teleport(lat, lon, label)
+        else:
+            self.panel.goto(lat, lon, label=label)   # stage it; Set once connected
 
     def _save_current(self):
         loc = self.panel.pending or self.panel._live_pos
         if not loc:
             self.set_hint("Pick or set a location first, then save it.")
             return
-        self.sidebar.save_place(loc[0], loc[1])
+        name = (self.panel._pending_label if self.panel.pending
+                else self.sidebar.recent_name(*loc))
+        self.sidebar.save_place(loc[0], loc[1], name)
 
     def _import_gpx(self):
         self.sidebar.close_menu()
         if self.panel.import_gpx():
-            self.controlbar.set_mode("Route")
+            self.panel.set_mode("route")
 
     # ---- one-time wireless enable ---------------------------------------
 
@@ -333,7 +382,7 @@ class MainWindow(QWidget):
     # ---- iPhone (portable QR) mode -------------------------------------
 
     def _on_app_mode(self, mode: str):
-        if mode == "iphone":
+        if mode == "iPhone":
             self.panel.stop_motion()
             self.panel.persist_spoof()         # remember it before we let go of the device
             self.panel.show_walk_pad(False)
@@ -349,7 +398,7 @@ class MainWindow(QWidget):
             self.portable.start()
         else:
             self.portable.stop()
-            self.stack.setCurrentWidget(self.body)
+            self.stack.setCurrentWidget(self.panel)
             self._set_connect_state("connect")
             self.restore_btn.setEnabled(True)
             self.set_status("Not connected", theme.GREY)
@@ -361,20 +410,20 @@ class MainWindow(QWidget):
         self.set_hint("Scan the QR with your iPhone to take control. Switch back to “This Mac” anytime.")
 
     def _on_portable_status(self, st):
-        if self.controlbar.app_mode.value() != "iPhone":
+        if self.app_mode.value() != "iPhone":
             return
         if st and st.get("connected"):
             nm = st.get("name") or "iPhone"
             self.set_status(f"iPhone in control  ·  {nm}", theme.GREEN)
-            self.portable_view.set_status(f"●  {nm} connected, controlling from your phone", theme.GREEN)
+            self.portable_view.set_status(f"{nm} connected, controlling from your phone", theme.GREEN)
         else:
             self.set_status("Waiting for your phone…", theme.AMBER)
-            self.portable_view.set_status("●  Waiting for your phone, scan the QR", theme.AMBER)
+            self.portable_view.set_status("Waiting for your phone, scan the QR", theme.AMBER)
 
     def _on_portable_failed(self, msg: str):
-        self.portable_view.set_status(f"⚠  {msg}", theme.RED)
+        self.portable_view.set_status(msg, theme.RED)
         self.set_status("Portable mode failed", theme.RED)
-        self.set_hint("Couldn’t start portable mode, switch back to This Mac and try again.")
+        self.set_hint("Couldn’t start portable mode. Switch back to This Mac and try again.")
 
     def _copy_portable_link(self):
         url = self.portable.url()
@@ -385,6 +434,9 @@ class MainWindow(QWidget):
         QTimer.singleShot(1200, lambda: self.portable_view.copy_btn.setText("Copy link"))
 
     def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape and self.sidebar.is_open():
+            self.sidebar.close_menu()
+            e.accept(); return
         if not e.isAutoRepeat():
             k = _ARROWS.get(e.key())
             if k and not isinstance(self.focusWidget(), QLineEdit):
@@ -455,6 +507,7 @@ class MainWindow(QWidget):
 
     def closeEvent(self, e):
         self.panel._closing = True       # stop the jitter worker
+        self.panel.stop_route()          # releases caffeinate via playingChanged
         self.panel.hold_awake(False)     # don't orphan caffeinate
         self.panel.persist_spoof()       # keep + remember the set location across runs
         self.portable.stop()

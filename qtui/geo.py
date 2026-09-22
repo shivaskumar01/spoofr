@@ -46,6 +46,27 @@ def suggest(query: str, limit: int = 6) -> list[dict]:
     return out
 
 
+def reverse(lat: float, lon: float) -> str:
+    """(lat, lon) -> a short human name ('Rockefeller Center, New York'), or ""."""
+    import requests
+    try:
+        r = requests.get("https://photon.komoot.io/reverse",
+                         params={"lat": lat, "lon": lon, "lang": "en", "limit": 1},
+                         headers={"User-Agent": "Spoofr/1.0 (macOS location utility)"}, timeout=4)
+        feats = r.json().get("features", [])
+    except Exception:
+        return ""
+    if not feats:
+        return ""
+    p = feats[0].get("properties", {})
+    street = " ".join(x for x in (p.get("housenumber"), p.get("street")) if x)
+    name = p.get("name") or street
+    place = p.get("city") or p.get("district") or p.get("county") or p.get("state") or ""
+    if name and place and place != name:
+        return f"{name}, {place}"
+    return name or place or ""
+
+
 def geocode(query: str) -> tuple[float, float]:
     """Address/city -> (lat, lon). Raises if not found."""
     import geocoder

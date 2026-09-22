@@ -1,93 +1,107 @@
 :root{
-  --bg:#0a0e17; --panel:#111a2c; --elev:#1a2440; --border:#27344f;
-  --blue:#3b82f6; --blue-hi:#5c9bff; --ghost:#1c2740;
-  --text:#eaf0fb; --muted:#8a97b4; --pin:#ff5a5f; --live:#22d3ee;
-  --grey:#6b7687; --green:#2bd07a; --amber:#f4b740; --red:#ff5c5c;
+  --bg:#0b0f18; --panel:#111726; --elev:#1a2133; --elev-hi:#232c42; --border:#222b3d;
+  --float:rgba(17,23,38,.94); --edge:rgba(255,255,255,.08);
+  --blue:#3b82f6; --blue-hi:#5b9bff; --ghost:#1a2133;
+  --text:#e8edf7; --muted:#8b96ac; --faint:#5b6780;
+  --pin:#ff5a5f; --live:#22d3ee;
+  --grey:#6b7687; --green:#2bd07a; --amber:#f4b740; --red:#ff5c5c; --danger:#e5484d;
+  --map:#0b1120;
+  --safe-b:env(safe-area-inset-bottom, 0px);
 }
 *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
 html,body{margin:0; height:100%; background:var(--bg); color:var(--text); overflow:hidden;
-  font-family:-apple-system,"SF Pro Text",system-ui,Helvetica,sans-serif;}
+  font-family:-apple-system,system-ui,"Helvetica Neue",sans-serif; -webkit-font-smoothing:antialiased;}
+button{font-family:inherit;}
 
-#bar{display:flex; align-items:center; gap:12px; height:56px; padding:0 14px;
+/* ---- header ---- */
+#bar{position:absolute; top:0; left:0; right:0; z-index:6; display:flex; align-items:center; gap:10px;
+  height:54px; padding:0 12px; padding-top:env(safe-area-inset-top, 0px);
   background:var(--panel); border-bottom:1px solid var(--border);}
-.mark{font-weight:700; font-size:15px; white-space:nowrap;}
+.mark{flex:none; font-weight:700; font-size:15px; white-space:nowrap;}
 .logo{color:var(--blue);}
-.mark{flex:none;}
-.pill{display:flex; align-items:center; gap:7px; background:var(--elev);
-  border-radius:14px; padding:6px 12px; font-size:13px; min-width:0; flex:1 1 auto;
-  overflow:hidden;}
-.dot{color:var(--grey); font-size:11px; flex:none;}
-#status{color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
-  min-width:0;}
-.actions{margin-left:auto; display:flex; gap:8px; flex:none;}
+.pill{display:flex; align-items:center; gap:8px; background:var(--elev); border-radius:15px;
+  height:30px; padding:0 12px; font-size:13px; font-weight:500; min-width:0; flex:1 1 auto;}
+.dot{width:8px; height:8px; border-radius:50%; background:var(--grey); flex:none;}
+#status{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;}
+.actions{display:flex; gap:8px; flex:none;}
 
-  .mark{font-size:0;}
-  .mark .logo{font-size:18px;}
-  .btn{padding:9px 11px; font-size:12px;}
-  #controls{gap:10px; padding:0 10px;}
-}
-
-.btn{border:0; border-radius:10px; color:#fff; font-weight:700; font-size:13px;
-  padding:9px 14px; cursor:pointer; font-family:inherit;}
+/* ---- buttons ---- */
+.btn{border:0; border-radius:9px; color:#fff; font-weight:600; font-size:13px;
+  height:32px; padding:0 14px; cursor:pointer;}
 .btn.primary{background:var(--blue);} .btn.primary:active{background:var(--blue-hi);}
-.btn.soft{background:var(--ghost); color:var(--text);}
+.btn.soft{background:var(--elev); color:var(--text);} .btn.soft:active{background:var(--elev-hi);}
 .btn.ghost{background:transparent; border:1px solid var(--border); color:var(--text);}
-.btn.sm{padding:7px 12px;}
+.btn.danger{background:var(--danger);}
+.btn:disabled{opacity:.45;}
 
-#controls{display:flex; align-items:center; gap:14px; height:52px; padding:0 14px; background:var(--bg);}
-.seg{display:flex; background:var(--elev); border-radius:9px; padding:3px; flex:none;}
-.seg button{border:0; background:transparent; color:var(--text); font-weight:700; font-size:13px;
-  padding:7px 16px; border-radius:7px; cursor:pointer; font-family:inherit;}
-.seg button.on{background:var(--blue);}
-.route-ctl{display:flex; align-items:center; gap:10px;}
-.route-ctl .lbl{color:var(--muted); font-size:13px;}
-#speed{accent-color:var(--blue); width:120px;}
-#speed-val{font-size:13px; width:58px;}
+/* ---- map + floating chrome ---- */
+#map{position:absolute; left:0; right:0; top:54px; bottom:calc(30px + var(--safe-b)); background:var(--map);}
+.float{background:var(--float); border:1px solid var(--edge); border-radius:14px;}
 
-#map{position:absolute; left:0; right:0; top:108px; bottom:36px;}
+#seg{position:absolute; top:66px; left:12px; z-index:5; display:flex; padding:4px; gap:2px;}
+.seg button{border:0; background:transparent; color:var(--muted); font-weight:600; font-size:13px;
+  height:30px; padding:0 14px; border-radius:15px; cursor:pointer;}
+.seg button.on{background:var(--blue); color:#fff;}
 
-#search{position:absolute; top:120px; left:50%; transform:translateX(-50%); z-index:5;
-  display:flex; gap:6px; align-items:center; background:var(--panel); border:1px solid var(--border);
-  border-radius:12px; padding:5px 6px 5px 12px; box-shadow:0 4px 16px rgba(0,0,0,.35);}
-#search input{border:0; background:transparent; color:var(--text); font-size:14px; width:60vw; max-width:300px;
+#search{position:absolute; top:66px; right:12px; left:180px; z-index:5; display:flex; align-items:center;
+  height:40px; padding:0 12px; gap:8px;}
+#search svg{flex:none; opacity:.8;}
+#search input{flex:1; min-width:0; border:0; background:transparent; color:var(--text); font-size:15px;
   outline:none; font-family:inherit;}
+#search input::placeholder{color:var(--faint);}
 
-.setbtn{position:absolute; bottom:54px; left:50%; transform:translateX(-50%); z-index:5;
-  background:var(--blue); color:#fff; border:0; border-radius:24px; font-weight:700; font-size:15px;
-  padding:13px 24px; cursor:pointer; box-shadow:0 6px 22px rgba(0,0,0,.45); font-family:inherit;}
+.setbtn{position:absolute; left:50%; transform:translateX(-50%); z-index:5;
+  bottom:calc(46px + var(--safe-b));
+  background:var(--blue); color:#fff; border:0; border-radius:24px; font-weight:600; font-size:16px;
+  height:48px; padding:0 26px; cursor:pointer;}
 
-#hint{position:absolute; left:0; right:0; bottom:0; height:36px; display:flex; align-items:center;
-  padding:0 16px; color:var(--muted); font-size:12px; background:var(--bg);
+#route-ctl{position:absolute; left:12px; right:12px; z-index:5; bottom:calc(42px + var(--safe-b));
+  max-width:460px; margin:0 auto; display:flex; flex-direction:column; gap:8px; padding:10px 12px;}
+#route-ctl .row{display:flex; align-items:center; gap:10px;}
+#pace{background:var(--elev); border-radius:18px; padding:3px; display:flex; gap:2px;}
+#pace button{padding:0 12px;}
+#speed{width:100%; margin:2px 0; accent-color:var(--blue);}
+#speed-val{margin-left:auto; font-size:13px; font-weight:600;}
+#eta{flex:1; font-size:13px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+
+#hint{position:absolute; left:0; right:0; bottom:0; height:calc(30px + var(--safe-b));
+  padding:0 14px var(--safe-b); display:flex; align-items:center;
+  color:var(--muted); font-size:12px; background:var(--panel); border-top:1px solid var(--border);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 
 .hidden{display:none !important;}
 
-/* markers */
+/* ---- markers ---- */
 .mk{border-radius:50%; border:2px solid #fff; box-shadow:0 1px 5px rgba(0,0,0,.55);}
-.mk-live{width:18px; height:18px; background:var(--live); box-shadow:0 0 0 6px rgba(34,211,238,.22), 0 1px 5px rgba(0,0,0,.5);}
+.mk-live{width:16px; height:16px; background:var(--live);
+  box-shadow:0 0 0 6px rgba(34,211,238,.22), 0 1px 5px rgba(0,0,0,.5);}
 .mk-pin{width:16px; height:16px; background:var(--pin);}
 .mk-wp{width:22px; height:22px; background:var(--blue); color:#fff; font-size:12px; font-weight:700;
   display:flex; align-items:center; justify-content:center;}
+.mk-wp.dest{background:var(--green);}
 
-/* wizard */
+/* ---- Developer Mode wizard ---- */
 .wizard{position:absolute; inset:0; z-index:20; background:rgba(5,8,14,.74);
   display:flex; align-items:center; justify-content:center;}
-.card{background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:24px; max-width:440px; margin:16px;}
+.card{background:var(--panel); border:1px solid var(--border); border-radius:18px; padding:24px;
+  max-width:440px; margin:16px;}
 .card h2{margin:0 0 6px; font-size:19px;}
 .card p{color:var(--muted); font-size:13px; margin:0 0 14px; line-height:1.5;}
 .card ol{margin:0 0 16px; padding-left:20px; line-height:1.9; font-size:14px;}
-.wiz-status{color:var(--amber); font-weight:700; font-size:13px; margin-bottom:16px;}
+.wiz-status{color:var(--amber); font-weight:600; font-size:13px; margin-bottom:16px;}
 
-/* MapLibre tweaks */
-.maplibregl-ctrl-attrib{font-size:9px; background:rgba(17,26,44,.7);}
-.maplibregl-ctrl-attrib a{color:var(--muted);}
-.maplibregl-ctrl-group{background:var(--panel); border:1px solid var(--border);}
-.maplibregl-ctrl-group button{background:var(--panel);}
-.maplibregl-ctrl-group button+button{border-top:1px solid var(--border);}
+/* ---- MapLibre ---- */
+.maplibregl-ctrl-attrib{font-size:9px; background:rgba(17,23,38,.7) !important;}
+.maplibregl-ctrl-attrib a{color:var(--muted) !important;}
+.maplibregl-ctrl-bottom-right{bottom:6px;}
 
-/* Phone widths: the header is 437px of content at its narrowest, so on a 393pt
-   iPhone the Connect button ran off the right edge -- on the one surface that is
-   only ever opened on a phone. Drop the wordmark to its glyph and tighten the
-   buttons so everything fits. */
+/* Phone widths: keep Restore + Connect on screen on a 390pt iPhone by
+   dropping the wordmark to its glyph. (This block was once left unclosed and
+   split across the file, which silently dropped the base button styles.) */
 @media (max-width: 480px){
   #bar{gap:8px; padding:0 10px;}
+  .mark{font-size:0;}
+  .mark .logo{font-size:18px;}
+  .btn{padding:0 11px; font-size:12px;}
+  #search{left:12px; top:112px;}
+}

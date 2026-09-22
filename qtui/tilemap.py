@@ -1,18 +1,19 @@
-"""A GPU-accelerated slippy-map widget, the native replacement for the Tk
-canvas map.
+"""A smooth native slippy-map widget.
 
-It is a QGraphicsView (OpenGL viewport) over a Web-Mercator tile pyramid:
+It is a QGraphicsView (raster viewport) over a Web-Mercator tile pyramid:
 
   * tiles are QGraphicsPixmapItems fetched asynchronously with QNetworkAccessManager
     and a QNetworkDiskCache, so revisits are instant and there is no white flash;
   * the scene lives in "world pixels" at one integer zoom level; fractional zoom is
-    a GPU view-scale, so pinch is buttery and tiles only re-grid when the level flips;
+    a view scale, so pinch is smooth and tiles only re-grid when the level flips;
+  * a light street map is recoloured on arrival into the app's navy ramp, so the
+    map and the chrome around it read as one calm surface;
   * markers keep a constant on-screen size (ItemIgnoresTransformations); routes are
     cosmetic-pen paths that stay a constant width at any zoom;
   * macOS trackpad pinch/scroll arrive as real Qt gesture/wheel events, no pyobjc.
 
 Public surface mirrors what the app needs: set_center/center, set_zoom/zoom,
-zoom_at, add_marker/move_marker/remove_item, set_path, plus `clicked(lat, lon)`
+zoom_at, add_marker/move_marker/remove_overlay, add_path/update_path, plus `clicked(lat, lon)`
 and `viewChanged` signals.
 """
 
@@ -28,7 +29,7 @@ from PySide6.QtCore import (
     QUrl, QVariantAnimation,
 )
 from PySide6.QtGui import (
-    QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QRegion,
+    QColor, QImage, QPainter, QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtNetwork import (
     QNetworkAccessManager, QNetworkDiskCache, QNetworkRequest, QNetworkReply,
@@ -70,6 +71,43 @@ ESRI_DARK = TileSource(
 )
 
 DEFAULT_SOURCE = ESRI_DARK
+
+# Light-map luminance -> navy. Index = the grey level of the original tile; the
+# ramp runs inverted (paper-white land becomes the dark canvas, black label ink
+# becomes the light end) and the gamma pushes the mid-greys of road casings and
+# building outlines down towards the canvas, so streets read as quiet lines and
+# labels stay legible instead of every edge shouting at the same contrast.
+RAMP_GAMMA = 1.45
+
+
+def _ramp_table(dark: str = theme.MAP_BG, light: str = theme.MAP_INK,
+                gamma: float = RAMP_GAMMA) -> list[int]:
+    lo, hi = QColor(dark), QColor(light)
+    table = []
+    for v in range(256):
+        f = (1.0 - v / 255.0) ** gamma
+        table.append(QColor(
+            round(lo.red() + (hi.red() - lo.red()) * f),
+            round(lo.green() + (hi.green() - lo.green()) * f),
+            round(lo.blue() + (hi.blue() - lo.blue()) * f)).rgb())
+    return table
+
+
+_RAMP = _ramp_table()
+
+
+def recolor(img: QImage) -> QImage:
+    """Map a light basemap tile onto the navy ramp.
+
+    One colour-table lookup per pixel: take the tile's grey levels and read them
+    back as indices into the ramp. No per-pixel Python.
+    """
+    gray = img.convertToFormat(QImage.Format.Format_Grayscale8)
+    data = bytes(gray.constBits())      # keep alive until the copy below is made
+    idx = QImage(data, gray.width(), gray.height(), gray.bytesPerLine(),
+                 QImage.Format.Format_Indexed8)
+    idx.setColorTable(_RAMP)
+    return idx.convertToFormat(QImage.Format.Format_RGB32)
 
 
 def _clamp(v, lo, hi):
@@ -268,6 +306,19 @@ class TileMap(QGraphicsView):
         ov.pts = list(pts)
         self._rebuild_path(ov)
 
+    def style_path(self, ov: "_PathOverlay", color: str, width: int, dashed: bool = False):
+        ov.item.setPen(self._path_pen(color, width, dashed))
+
+    @staticmethod
+    def _path_pen(color: str, width: int, dashed: bool) -> QPen:
+        pen = QPen(QColor(color), width)
+        pen.setCosmetic(True)                 # constant width at any zoom
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        if dashed:
+            pen.setDashPattern([0.1, 2.2])    # round dots: a straight-line preview
+        return pen
+
     def is_near_edge(self, lat: float, lon: float, margin: float = 0.22) -> bool:
         """True when this coordinate has drifted out of the comfortable middle.
 
@@ -291,13 +342,10 @@ class TileMap(QGraphicsView):
         if ov in self._paths:
             self._paths.remove(ov)
 
-    def add_path(self, pts, color: str = theme.BLUE, width: int = 5, z: int = 5):
+    def add_path(self, pts, color: str = theme.BLUE, width: int = 5, z: int = 5,
+                 dashed: bool = False):
         item = QGraphicsPathItem()
-        pen = QPen(QColor(color), width)
-        pen.setCosmetic(True)                 # constant width at any zoom
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        item.setPen(pen)
+        item.setPen(self._path_pen(color, width, dashed))
         item.setZValue(z)
         self._scene.addItem(item)
         ov = _PathOverlay(item, pts)
@@ -519,9 +567,7 @@ class TileMap(QGraphicsView):
         """
         dpr = max(1.0, pix.width() / TILE)
         if self._source.recolor:
-            img = pix.toImage().convertToFormat(QImage.Format.Format_Grayscale8)
-            img.invertPixels()          # light street map -> dark canvas
-            pix = QPixmap.fromImage(img)
+            pix = QPixmap.fromImage(recolor(pix.toImage()))
         pix.setDevicePixelRatio(dpr)
         return pix
 
@@ -605,7 +651,3 @@ class TileMap(QGraphicsView):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._apply_view()
-        # round the corners so the map sits inside the card's rounded frame
-        path = QPainterPath()
-        path.addRoundedRect(0, 0, self.width(), self.height(), 11, 11)
-        self.setMask(QRegion(path.toFillPolygon().toPolygon()))
