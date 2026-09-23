@@ -61,6 +61,8 @@ class MainWindow(QWidget):
         self.bridge = DeviceBridge()
         self.settings = store.load()
         self._migrate()
+        # the bridge reattaches known phones over Wi-Fi by name, without usbmux
+        self.bridge.known_devices = self.settings.setdefault("devices", {})
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -196,8 +198,16 @@ class MainWindow(QWidget):
             return
         udid = getattr(device, "udid", "") or getattr(device, "serial", "")
         devs = self.settings.setdefault("devices", {})
+        prev = devs.get(udid) or {}
+        up = getattr(device, "uptime", None)
+        if up is not None:
+            # the phone's uptime only goes backwards when it restarts. (Needing to
+            # mount the developer image again is not a restart signal: iOS can
+            # unmount it on its own, and treating that as a restart is what made a
+            # plain replug drop the route.)
+            device.restarted = prev.get("uptime") is not None and up + 1 < prev["uptime"]
         devs[udid] = {"name": device.name, "model": getattr(device, "model", ""),
-                      "ios": device.ios, "last": time.time()}
+                      "ios": device.ios, "last": time.time(), "uptime": up}
         self.settings["last_device"] = udid
         self.settings["wireless_on"] = bool(getattr(device, "wireless_on", False))
         pending = self.settings.pop("pending_spoof", None)

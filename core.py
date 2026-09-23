@@ -35,7 +35,10 @@ for _brew in ("/opt/homebrew/bin", "/usr/local/bin"):
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + _brew
 
 import asyncio
+import json
+import plistlib
 import re
+import urllib.request
 import socket
 import subprocess
 import threading
@@ -58,8 +61,10 @@ from pymobiledevice3.exceptions import (
     TunneldConnectionError,
     UserDeniedPairingError,
 )
+from pymobiledevice3.common import get_home_folder
 from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.services.amfi import AmfiService
+from pymobiledevice3.services.dvt.instruments.device_info import DeviceInfo
 from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
 from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
 from pymobiledevice3.services.mobile_image_mounter import auto_mount_personalized
@@ -82,6 +87,9 @@ LOCK_TIMEOUT = 30.0      # ceiling on waiting for another caller's device op
 MOUNT_TIMEOUT = 300.0    # developer disk image, including a download on a new iOS
 RSD_TIMEOUT = 45.0       # how long to let the daemon find and tunnel this phone
 USBMUX_TIMEOUT = 5.0     # listing devices: a local socket, should be instant
+# After the cable comes out, the tunnel daemon needs a few seconds to find the
+# phone on Wi-Fi (it browses every 5 s) and build a tunnel over it.
+WIFI_REATTACH_WAIT = 25.0
 LOCKDOWN_TIMEOUT = 15.0  # a lockdown round-trip (dev-mode status, reveal, wireless)
 # the whole connect pipeline, as a backstop over the per-step bounds above
 CONNECT_TIMEOUT = MOUNT_TIMEOUT + RSD_TIMEOUT + 120.0
@@ -290,9 +298,12 @@ class Device:
     wireless_on: bool = False      # EnableWifiConnections, cable-free control available
     udid: str = ""                 # stable identity: sessions and settings are per phone
     model: str = ""                # "iPhone 17 Pro"
-    # the developer image had to be mounted on this connect. It never survives a
-    # restart, so with a spoof on record this means the phone restarted and lost it
+    # the developer image had to be mounted on this connect (diagnostic only: iOS
+    # can unmount it without a restart, so this is not a restart signal)
     fresh_mount: bool = False
+    # seconds the phone has been up (mach time). It only goes backwards when the
+    # phone restarts, which is how a restart is told apart from a replug.
+    uptime: Optional[float] = None
     _lock: "threading.Lock" = field(default_factory=threading.Lock)
     _epoch: int = 0                # bumped by suspend(); invalidates in-flight set()s
     _inflight: object = None       # the device call running right now, so suspend() can cut it
@@ -433,7 +444,8 @@ class Device:
                 self._lock.release()
 
 
-def connect(on_status: Optional[StatusFn] = None, serial: Optional[str] = None) -> Device:
+def connect(on_status: Optional[StatusFn] = None, serial: Optional[str] = None,
+            meta: Optional[dict] = None) -> Device:
     """Start/attach the tunnel and open a spoofing session against the iPhone
     (`serial`, or the first one visible, cable preferred).
 
@@ -446,7 +458,7 @@ def connect(on_status: Optional[StatusFn] = None, serial: Optional[str] = None) 
 
     say("Starting the tunnel…")
     _tunneld.ensure()
-    return _loop.run(_open(say, serial), CONNECT_TIMEOUT)
+    return _loop.run(_open(say, serial, meta), CONNECT_TIMEOUT)
 
 
 # --- discovery: what is plugged in, and is it ready? --------------------------
@@ -552,7 +564,11 @@ async def _link_status(serial: str) -> Optional[str]:
     except Exception:
         return None
     kinds = {d.connection_type for d in devices if getattr(d, "serial", None) == serial}
-    return _kinds_to_link(kinds)
+    link = _kinds_to_link(kinds)
+    if not link and serial in await asyncio.get_running_loop().run_in_executor(None, tunneld_udids):
+        # usbmux doesn't list it, but the daemon holds a tunnel to it: on Wi-Fi
+        return "Wi-Fi"
+    return link
 
 
 def visible_kinds() -> str:
@@ -655,13 +671,20 @@ async def _reveal_dev_mode() -> None:
             pass
 
 
-async def _open(say: StatusFn, want: Optional[str] = None) -> Device:
+async def _open(say: StatusFn, want: Optional[str] = None,
+                meta: Optional[dict] = None) -> Device:
     say("Looking for your iPhone…")
     muxed = await _bounded(list_devices(), 10,
                            "Couldn’t reach the Mac’s iPhone service. Unplug the phone, "
                            "plug it back in, and try again.")
     if want:
-        muxed = [d for d in muxed if d.serial == want] or muxed
+        # only the phone asked for: falling back to "any phone" used to connect a
+        # different iPhone than the one whose session was waiting
+        muxed = [d for d in muxed if d.serial == want]
+        if not muxed:
+            # not on the cable (or usbmux's Wi-Fi listing): the tunnel daemon may
+            # still reach it over Wi-Fi, which needs no usbmux at all
+            return await _reattach(want, say, meta or {})
     if not muxed:
         raise NoDeviceFound("Your iPhone isn’t showing up. Plug it in with a cable, "
                             "unlock it, and tap Trust if it asks.")
@@ -690,6 +713,8 @@ async def _open(say: StatusFn, want: Optional[str] = None) -> Device:
         ios = lockdown.product_version
         udid = lockdown.udid or serial
         model = lockdown.display_name or lockdown.all_values.get("ProductType") or "iPhone"
+        # so the tunnel daemon can find this phone on Wi-Fi after the cable is out
+        _save_pair_record(udid, lockdown)
         try:
             wireless_on = bool(await asyncio.wait_for(lockdown.get_enable_wifi_connections(), 5))
         except Exception:
@@ -723,7 +748,13 @@ async def _open(say: StatusFn, want: Optional[str] = None) -> Device:
             pass
 
     rsd = await _wait_for_rsd(udid, say)
+    return await _session_on(rsd, say, name=name, ios=ios, serial=serial, link=link,
+                             wireless_on=wireless_on, udid=udid, model=model,
+                             fresh_mount=fresh_mount)
 
+
+async def _session_on(rsd, say: StatusFn, **fields) -> Device:
+    """Open the location service over a tunnel's RSD and wrap it as a Device."""
     say("Opening the location service…")
     stack = AsyncExitStack()          # owns the RSD tunnel (closes last)
     loc_stack = AsyncExitStack()      # owns DVT + location (rebuildable if the channel idles out)
@@ -735,15 +766,112 @@ async def _open(say: StatusFn, want: Optional[str] = None) -> Device:
         location = LocationSimulation(dvt)
         await _bounded(loc_stack.enter_async_context(location), 20,
                        "Timed out opening the location service.")
+        uptime = await _uptime(dvt)
     except Exception:
         await loc_stack.aclose()
         await stack.aclose()
         raise
+    return Device(_location=location, _stack=stack, _rsd=rsd, _loc_stack=loc_stack,
+                  uptime=uptime, **fields)
 
-    return Device(name=name, ios=ios, _location=location, _stack=stack,
-                  _rsd=rsd, _loc_stack=loc_stack, serial=serial,
-                  link=link, wireless_on=wireless_on, udid=udid, model=model,
-                  fresh_mount=fresh_mount)
+
+def describe(dev: "Device") -> str:
+    """One log line's worth: which path, how long the phone has been up. Never
+    raises: a log line must not be able to break a connect."""
+    try:
+        base = f"{dev.name} iOS {dev.ios} via {dev.link}"
+        uptime = getattr(dev, "uptime", None)
+        up = f"{uptime / 3600:.1f} h" if uptime is not None else "?"
+        via = ", ".join(tunneld_udids().get(getattr(dev, "udid", ""), [])) or "?"
+        mount = "mounted now" if getattr(dev, "fresh_mount", False) else "already mounted"
+        return f"{base} (tunnel {via}; up {up}; image {mount})"
+    except Exception:
+        return str(getattr(dev, "name", "iPhone"))
+
+
+async def _uptime(dvt) -> Optional[float]:
+    """Seconds since the phone booted (mach absolute time), or None."""
+    try:
+        async def read():
+            async with DeviceInfo(dvt) as info:
+                t = await info.mach_time_info()
+            return float(t[0]) * float(t[1]) / float(t[2]) / 1e9
+        return await asyncio.wait_for(read(), 5)
+    except Exception:
+        return None
+
+
+async def _reattach(udid: str, say: StatusFn, meta: dict) -> Device:
+    """Reach a known iPhone through the tunnel daemon alone (Wi-Fi, no cable).
+
+    No usbmux, no lockdown, no mount: the developer image stays mounted until the
+    phone restarts, and the tunnel is all the location service needs. Name and iOS
+    come from what was remembered on the last cable connect.
+    """
+    say("Looking for your iPhone on Wi-Fi…")
+    # ask the daemon for a Wi-Fi tunnel now rather than waiting for its next
+    # 5-second scan; whichever arrives first, this or the scan, is used below
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(None, request_wifi_tunnel, udid)
+    rsd = await _wait_for_rsd(udid, say, timeout=WIFI_REATTACH_WAIT)
+    _log(f"reattached over Wi-Fi: {udid} via {tunneld_udids().get(udid)}")
+    ios = getattr(rsd, "product_version", None) or meta.get("ios", "")
+    return await _session_on(
+        rsd, say, name=meta.get("name") or "iPhone", ios=ios, serial=udid, link="Wi-Fi",
+        wireless_on=True, udid=udid, model=meta.get("model") or "iPhone")
+
+
+def _save_pair_record(udid: str, lockdown) -> None:
+    """Keep this phone's lockdown pairing record where pymobiledevice3 looks for it.
+
+    The tunnel daemon finds a phone on Wi-Fi by matching the Wi-Fi MAC address it
+    advertises (_apple-mobdev2) against `<udid>.plist` records in its home folder.
+    Pairing records normally live only in usbmuxd's store, so without this copy
+    the daemon had nothing to match and never built a Wi-Fi tunnel.
+    """
+    try:
+        record = dict(lockdown.pair_record or {})
+        mac = record.get("WiFiMACAddress") or lockdown.all_values.get("WiFiAddress")
+        if not record or not mac:
+            return
+        record["WiFiMACAddress"] = mac
+        path = get_home_folder() / f"{udid}.plist"
+        if path.exists():
+            try:
+                old = plistlib.loads(path.read_bytes())
+                if old.get("HostID") == record.get("HostID") and old.get("WiFiMACAddress") == mac:
+                    return
+            except Exception:
+                pass
+        tmp = path.with_suffix(".plist.tmp")
+        tmp.write_bytes(plistlib.dumps(record))
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except Exception as e:
+        _log(f"couldn't save the pairing record for Wi-Fi: {e!r}")
+
+
+def request_wifi_tunnel(udid: str, timeout: float = WIFI_REATTACH_WAIT) -> bool:
+    """Ask the tunnel daemon to build a Wi-Fi (RemotePairing) tunnel to `udid`."""
+    try:
+        url = (f"http://{TUNNELD_DEFAULT_ADDRESS[0]}:{TUNNELD_DEFAULT_ADDRESS[1]}"
+               f"/start-tunnel?udid={udid}&connection_type=wifi")
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def tunneld_udids() -> dict:
+    """{udid: [tunnel interfaces]} straight from the tunnel daemon, {} if it's down."""
+    try:
+        with urllib.request.urlopen(
+                f"http://{TUNNELD_DEFAULT_ADDRESS[0]}:{TUNNELD_DEFAULT_ADDRESS[1]}/", timeout=2) as r:
+            data = json.loads(r.read().decode() or "{}")
+        return {u: [t.get("interface", "") for t in ts] for u, ts in data.items()
+                if isinstance(ts, list)}
+    except Exception:
+        return {}
 
 
 async def _bounded(coro, seconds: float, message: str):

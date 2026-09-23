@@ -10,14 +10,34 @@ from __future__ import annotations
 import sys
 
 
+def _act_for(user: str) -> None:
+    """Set SUDO_USER/UID/GID for `user`, as sudo would for a root process."""
+    import os
+    import pwd
+    try:
+        pw = pwd.getpwnam(user)
+    except (KeyError, TypeError):
+        return
+    os.environ.update(SUDO_USER=pw.pw_name, SUDO_UID=str(pw.pw_uid), SUDO_GID=str(pw.pw_gid))
+
+
 def main() -> None:
     args = sys.argv[1:]
     if args and args[0] == "--tunneld":
         # privileged tunnel daemon (launched as root via osascript). Remaining
         # args are passed straight through -- portable.py sends --protocol tcp,
-        # without which a modern iPhone can never be tunnelled.
+        # without which a modern iPhone can never be tunnelled -- except
+        # --as-user, which is ours: act for that user the way sudo would, so
+        # pymobiledevice3 reads (and writes) pairing records in *their* home.
+        # Without it the daemon looked in root's and never found the phone on Wi-Fi.
+        rest = list(args[1:])
+        if "--as-user" in rest:
+            i = rest.index("--as-user")
+            user = rest[i + 1] if i + 1 < len(rest) else ""
+            del rest[i:i + 2]
+            _act_for(user)
         from pymobiledevice3.__main__ import main as pmd_main
-        sys.argv = ["pymobiledevice3", "remote", "tunneld", *args[1:]]
+        sys.argv = ["pymobiledevice3", "remote", "tunneld", *rest]
         pmd_main()
     elif args and args[0] == "--server":
         # phone-control web server for iPhone (QR) mode

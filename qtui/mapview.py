@@ -179,9 +179,18 @@ class Banner(QFrame):
         self._cbs = (None, None)
         self.a.clicked.connect(lambda: self._fire(0))
         self.b.clicked.connect(lambda: self._fire(1))
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(lambda: self._fire(0, auto=True))
+        self._auto = None
         self.hide()
 
-    def ask(self, text: str, a: str, on_a, b: str = "", on_b=None):
+    def ask(self, text: str, a: str, on_a, b: str = "", on_b=None,
+            default_after_ms: int = 0, on_default=None):
+        """`default_after_ms`: if nobody answers, take the first answer by
+        itself (calling `on_default` instead, when given)."""
+        self._timer.stop()
+        self._auto = on_default
         self.text.setText(text)
         # a wrapped QLabel inside a floating widget doesn't get its height from
         # a layout pass, so the last line was being cut off: size it explicitly
@@ -194,9 +203,12 @@ class Banner(QFrame):
         self._cbs = (on_a, on_b)
         self.adjustSize()
         self.show(); self.raise_()
+        if default_after_ms:
+            self._timer.start(default_after_ms)
 
-    def _fire(self, i: int):
-        cb = self._cbs[i]
+    def _fire(self, i: int, auto: bool = False):
+        self._timer.stop()
+        cb = (self._auto or self._cbs[0]) if auto else self._cbs[i]
         self.hide()
         if cb:
             cb()
@@ -677,7 +689,7 @@ class MapScreen(QWidget):
         self.conn_state = "connected"
         self._browsing = False
         self._force_welcome = False
-        fresh = bool(getattr(device, "fresh_mount", False))
+        fresh = bool(getattr(device, "restarted", False))
         if self.session is not None:
             if self.session_udid and udid and self.session_udid != udid:
                 self.show_toast("A different iPhone is connected; the other one’s route is "
@@ -1814,7 +1826,8 @@ class MapScreen(QWidget):
                 self._start_runner()
             self.banner.ask("Your iPhone restarted and lost its spoofed location.",
                             "Resume route", self._release_after_restart,
-                            "Re-apply location", self._reapply_and_pause)
+                            "Re-apply location", self._reapply_and_pause,
+                            default_after_ms=self.CATCH_UP_WAIT_MS)
             return
         if self._resume_pending:
             self.resume_session()
@@ -1850,24 +1863,37 @@ class MapScreen(QWidget):
             r.poke()
         self.show_toast("Location re-applied. The route is paused; Resume when you’re ready.")
 
+    CATCH_UP_WAIT_MS = 12_000
+
     def _apply_catch_up(self):
-        """Catch up (default) or continue from where it stopped. Asked the first time."""
-        s = self.session
+        """Catch up (default) or continue from where it stopped.
+
+        Asked the first time it comes up, in a banner: a modal dialog stopped the
+        whole route (and everything else) until someone clicked it. The route
+        holds for a few seconds while the banner is up, then catches up by itself
+        if nobody answers (not remembered, so it's asked again next time)."""
         pref = self.settings.get("catch_up")
-        if pref not in ("catchup", "continue"):
-            box = QMessageBox(self)
-            box.setWindowTitle("Your iPhone is back")
-            box.setText("The route kept going while your iPhone was away.")
-            box.setInformativeText("Catch up puts it where it would be now. Continue picks up "
-                                   "from the last spot it actually reached. You can change "
-                                   "this later in Settings.")
-            cu = box.addButton("Catch up", QMessageBox.ButtonRole.AcceptRole)
-            box.addButton("Continue from where it stopped", QMessageBox.ButtonRole.AcceptRole)
-            box.setDefaultButton(cu)
-            box.exec()
-            pref = "catchup" if box.clickedButton() is cu else "continue"
-            self.settings["catch_up"] = pref
+        if pref in ("catchup", "continue"):
+            self._resolve_catch_up(pref)
+            return
+        if self.session is not None:
+            self.session.hold = True
+
+        def choose(p):
+            self.settings["catch_up"] = p
             store.save(self.settings)
+            self._resolve_catch_up(p)
+        self.banner.ask("Your iPhone is back. Catch up to where the route would be now, or "
+                        "continue from where it stopped?",
+                        "Catch up", lambda: choose("catchup"),
+                        "Continue", lambda: choose("continue"),
+                        default_after_ms=self.CATCH_UP_WAIT_MS,
+                        on_default=lambda: self._resolve_catch_up("catchup"))
+
+    def _resolve_catch_up(self, pref: str):
+        s = self.session
+        if s is None:
+            return
         lock = self.runner.lock if self.runner is not None else threading.RLock()
         with lock:
             if pref == "continue":

@@ -186,9 +186,22 @@ class TestTunnelProtocol:
 
     def test_a_single_current_daemon_is_left_alone(self, monkeypatch):
         import portable
+        me = portable.run_as_user()
+        monkeypatch.setattr(portable, "_ps_lines",
+                            lambda: [f"  700 /x/Spoofr --tunneld --as-user {me} --protocol tcp"])
+        assert portable.tunnel_is_healthy() is True
+
+    def test_a_daemon_that_cant_see_the_users_pairing_records_is_replaced(self, monkeypatch):
+        """Started without --as-user it looks in root's home, never finds a pairing
+        record, and so can never reach the phone on Wi-Fi: unplugging ends it all."""
+        import portable
         monkeypatch.setattr(portable, "_ps_lines",
                             lambda: ["  700 /x/Spoofr --tunneld --protocol tcp"])
-        assert portable.tunnel_is_healthy() is True
+        assert portable.tunnel_is_healthy() is False
+
+    def test_the_daemon_is_told_whose_home_to_use(self):
+        import portable
+        assert f"--as-user {portable.run_as_user()}" in portable.tunnel_start_cmd()
 
     def test_a_daemon_without_the_flag_is_not_healthy(self, monkeypatch):
         import portable

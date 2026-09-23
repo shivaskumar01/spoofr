@@ -23,10 +23,12 @@ DEST = (37.7880, -122.4074)
 
 
 class Phone(FakeDevice):
-    def __init__(self, udid="UDID-1", fresh_mount=False, wireless_on=True):
+    def __init__(self, udid="UDID-1", restarted=False, wireless_on=True, uptime=None,
+                 fresh_mount=False):
         super().__init__()
-        self.udid, self.model, self.fresh_mount, self.wireless_on = \
-            udid, "iPhone 17 Pro", fresh_mount, wireless_on
+        self.udid, self.model, self.restarted, self.wireless_on = \
+            udid, "iPhone 17 Pro", restarted, wireless_on
+        self.uptime, self.fresh_mount = uptime, fresh_mount
         self.name = "Test iPhone"
 
 
@@ -599,7 +601,7 @@ class TestResuming:
 
     def test_a_restarted_phone_is_noticed(self, win):
         win.settings["spoofs"] = {"UDID-1": {"lat": SF[0], "lon": SF[1], "name": "Work"}}
-        connect(win, Phone(fresh_mount=True))
+        connect(win, Phone(restarted=True))
         sc = win.mapscreen
         assert sc.banner.isVisibleTo(win)
         assert sc.banner.a.text() == "Re-apply location"
@@ -609,7 +611,7 @@ class TestResuming:
         connect(win)
         sc = straight_route(win)
         sc.start_route()
-        sc.on_connected(Phone(fresh_mount=True))
+        sc.on_connected(Phone(restarted=True))
         assert {sc.banner.a.text(), sc.banner.b.text()} == {"Resume route", "Re-apply location"}
         assert sc.session.hold
 
@@ -735,7 +737,7 @@ class TestTheIPhoneIsOnTheMap:
         spoof from before was on record. The app noticed, but never centred."""
         asked = self._asked(win, monkeypatch)
         win.settings["spoofs"] = {"UDID-1": {"lat": 47.6, "lon": -122.3, "name": "Old"}}
-        connect(win, Phone(fresh_mount=True))
+        connect(win, Phone(restarted=True))
         win.mapscreen.locator.found.emit(*TEMPE, True)
         sc = win.mapscreen
         assert asked and sc.spoof is None
@@ -771,3 +773,123 @@ class TestTheIPhoneIsOnTheMap:
         sc.locator.found.emit(*TEMPE, True)
         sc.drop_pin(33.42, -111.93)
         assert sc.panel.pin.distance.text().endswith("from your iPhone")
+
+
+# ---- unplugging and replugging (reported: Wi-Fi didn't take over; replug lost the route)
+
+class TestUnplugAndReplug:
+    def test_a_replug_that_needed_a_remount_is_not_a_restart(self, win):
+        """What went wrong: iOS unmounted the developer image while the phone was
+        unplugged, the app took the remount for a restart, claimed the phone had
+        lost its location, and held the route on a banner."""
+        connect(win, Phone(uptime=5000.0))
+        sc = straight_route(win)
+        sc.start_route()
+        win.settings["catch_up"] = "catchup"
+        again = Phone(uptime=5400.0, fresh_mount=True)      # remounted, but up longer
+        win.bridge.device = again
+        win._on_connected(again)
+        assert again.restarted is False
+        assert not sc.banner.isVisibleTo(win) or "restarted" not in sc.banner.text.text()
+        assert sc.session is not None and sc.runner is not None and not sc.session.hold
+
+    def test_uptime_going_backwards_is_a_restart(self, win):
+        connect(win, Phone(uptime=90_000.0))
+        back = Phone(uptime=120.0)
+        win._on_connected(back)
+        assert back.restarted is True
+
+    def test_the_catch_up_question_never_stalls_the_route(self, win, monkeypatch):
+        from qtui.mapview import MapScreen
+        monkeypatch.setattr(MapScreen, "CATCH_UP_WAIT_MS", 50)
+        connect(win)
+        sc = straight_route(win)
+        sc.start_route()
+        win.settings["catch_up"] = None
+        sc._apply_catch_up()
+        assert sc.banner.isVisibleTo(win) and sc.session.hold
+        _spin(0.3)
+        assert sc.session.hold is False, "nobody answered, so it should have caught up"
+        assert win.settings["catch_up"] is None, "a default isn't a choice: ask again next time"
+
+    def test_answering_remembers(self, win):
+        connect(win)
+        sc = straight_route(win)
+        sc.start_route()
+        win.settings["catch_up"] = None
+        sc._apply_catch_up()
+        sc.banner.b.click()                                  # Continue
+        assert win.settings["catch_up"] == "continue" and not sc.session.hold
+
+    def test_the_bridge_knows_the_phones_for_wifi_reattach(self, win):
+        connect(win)
+        assert "UDID-1" in win.bridge.known_devices
+
+
+class TestWifiOnly:
+    def test_a_known_phone_on_wifi_only_is_a_ready_card(self, qapp, monkeypatch):
+        b = DeviceBridge()
+        b.known_devices = {"U1": {"name": "Shiva’s iPhone", "model": "iPhone 17 Pro Max", "ios": "27.0"}}
+        monkeypatch.setattr(core, "probe", lambda serials=None: [])        # usbmux: nothing
+        monkeypatch.setattr(core, "tunneld_udids", lambda: {"U1": ["mobdev2-U1-fe80::1"]})
+        cards = b.discover()
+        assert cards == [{"serial": "U1", "link": "Wi-Fi", "state": "ready", "udid": "U1",
+                          "name": "Shiva’s iPhone", "model": "iPhone 17 Pro Max", "ios": "27.0"}]
+
+    def test_strangers_on_the_tunnel_are_ignored(self, qapp, monkeypatch):
+        b = DeviceBridge()
+        monkeypatch.setattr(core, "probe", lambda serials=None: [])
+        monkeypatch.setattr(core, "tunneld_udids", lambda: {"SOMEONE-ELSE": ["x"]})
+        assert b.discover() == []
+
+    def test_connect_reaches_a_wifi_only_phone_through_the_tunnel(self, monkeypatch):
+        calls = []
+
+        async def no_usbmux():
+            return []
+
+        async def reattach(udid, say, meta):
+            calls.append((udid, meta))
+            return "device"
+        monkeypatch.setattr(core, "list_devices", no_usbmux)
+        monkeypatch.setattr(core, "_reattach", reattach)
+        got = core._loop.run(core._open(lambda m: None, "U1", {"name": "iPhone"}), 5)
+        assert got == "device" and calls == [("U1", {"name": "iPhone"})]
+
+    def test_it_never_falls_back_to_a_different_phone(self, monkeypatch):
+        class Other:
+            serial, connection_type = "OTHER", "USB"
+
+        async def other():
+            return [Other()]
+        seen = []
+
+        async def reattach(udid, say, meta):
+            seen.append(udid)
+            return "device"
+        monkeypatch.setattr(core, "list_devices", other)
+        monkeypatch.setattr(core, "_reattach", reattach)
+        core._loop.run(core._open(lambda m: None, "U1", {}), 5)
+        assert seen == ["U1"]
+
+    def test_a_tunnel_only_phone_is_on_wifi_not_gone(self, monkeypatch):
+        async def none():
+            return []
+        monkeypatch.setattr(core, "list_devices", none)
+        monkeypatch.setattr(core, "tunneld_udids", lambda: {"U1": ["mobdev2-U1-ip"]})
+        assert core.link_status("U1") == "Wi-Fi"
+        monkeypatch.setattr(core, "tunneld_udids", lambda: {})
+        assert core.link_status("U1") == ""
+
+    def test_the_pairing_record_is_kept_for_the_tunnel_daemon(self, tmp_path, monkeypatch):
+        import plistlib
+        monkeypatch.setattr(core, "get_home_folder", lambda: tmp_path)
+
+        class LD:
+            pair_record = {"HostID": "H", "SystemBUID": "S"}
+            all_values = {"WiFiAddress": "22:dd:51:fb:c5:c2"}
+        core._save_pair_record("U1", LD())
+        rec = plistlib.loads((tmp_path / "U1.plist").read_bytes())
+        assert rec["WiFiMACAddress"] == "22:dd:51:fb:c5:c2" and rec["HostID"] == "H"
+        import stat
+        assert stat.S_IMODE((tmp_path / "U1.plist").stat().st_mode) == 0o600

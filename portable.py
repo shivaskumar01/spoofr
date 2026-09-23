@@ -36,6 +36,20 @@ TUNNELD_LOG = "/tmp/spoofr-tunneld.log"
 TUNNEL_PROTOCOL = "tcp"
 
 
+def run_as_user() -> str:
+    """Who the root tunnel daemon works on behalf of.
+
+    It is started through the macOS password prompt, which gives a bare root
+    process: no SUDO_USER. pymobiledevice3 then looks for pairing records in
+    root's home, finds none, and can never build a Wi-Fi tunnel, so unplugging
+    the cable always ended the session. The daemon is told the user, and sets
+    SUDO_USER/SUDO_UID/SUDO_GID itself (see spoofr_app.py), which is exactly what
+    pymobiledevice3 expects under sudo.
+    """
+    import pwd
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
 def _helper_cmd(*args: str) -> list[str]:
     """Command that re-invokes this app in a helper mode (--tunneld / --server).
 
@@ -171,15 +185,22 @@ def _speaks_tcp(cmd: str) -> bool:
     return f"--protocol {TUNNEL_PROTOCOL}" in cmd or f"--protocol={TUNNEL_PROTOCOL}" in cmd
 
 
+def _knows_user(cmd: str, user: str | None = None) -> bool:
+    return f"--as-user {user or run_as_user()}" in cmd
+
+
 def tunnel_is_healthy() -> bool:
-    """Is there exactly one daemon, and can it actually open a tunnel?
+    """Is there exactly one daemon, and can it actually open a tunnel, over the
+    cable and over Wi-Fi?
 
     Two or more means an older one is still holding the port and the newer ones
     never bound it, so whoever is answering is not the one we asked for — start
-    over rather than trust it.
+    over rather than trust it. One started without --as-user can't see the
+    pairing records Wi-Fi needs, so it is replaced too (one password prompt).
     """
     daemons = running_tunnelds()
-    return len(daemons) == 1 and _speaks_tcp(daemons[0][1])
+    return (len(daemons) == 1 and _speaks_tcp(daemons[0][1])
+            and _knows_user(daemons[0][1]))
 
 
 def tunnel_start_cmd(stale_pids: Optional[list[int]] = None) -> str:
@@ -195,7 +216,8 @@ def tunnel_start_cmd(stale_pids: Optional[list[int]] = None) -> str:
     Killing by pid rather than `pkill -f -- --tunneld`, whose pattern would match
     the very shell running this command.
     """
-    start = detached_cmd(_helper_cmd("--tunneld", "--protocol", TUNNEL_PROTOCOL), TUNNELD_LOG)
+    start = detached_cmd(_helper_cmd("--tunneld", "--as-user", run_as_user(),
+                                     "--protocol", TUNNEL_PROTOCOL), TUNNELD_LOG)
     if not stale_pids:
         return start
     pids = " ".join(str(p) for p in stale_pids)

@@ -63,6 +63,11 @@ class DeviceBridge(QObject):
         self._reconnect_gen = 0
         self._vis_gen = 0
         self._want_serial: str | None = None
+        self._lost: dict | None = None           # who a reconnect is looking for
+        # udid -> {name, model, ios} of phones connected before (the window keeps
+        # this in settings). A phone that is only on Wi-Fi is reattached through
+        # the tunnel daemon, where usbmux can't tell us its name.
+        self.known_devices: dict = {}
         self._cards: dict[str, dict] = {}    # serial -> last card (lockdown is slow)
         self._trusting: set[str] = set()     # serials with a Trust request in flight
 
@@ -104,7 +109,7 @@ class DeviceBridge(QObject):
                 attempt += 1
                 try:
                     portable.ensure_tunnel()   # one admin prompt, only if needed
-                    kw = {"serial": want} if want else {}
+                    kw = {"serial": want, "meta": self.known_devices.get(want) or {}} if want else {}
                     device = core.connect(
                         on_status=lambda m: self.status.emit(m, theme.AMBER), **kw)
                 except getattr(core, "PhoneLocked", ()) as e:
@@ -149,8 +154,7 @@ class DeviceBridge(QObject):
                     continue
 
                 self.device = device
-                core._log(f"connected on attempt {attempt}: {device.name} "
-                          f"iOS {device.ios} via {device.link}")
+                core._log(f"connected on attempt {attempt}: {core.describe(device)}")
                 self._emit_connected_status(device)
                 self.connected.emit(device)
                 self._start_monitor()
@@ -334,6 +338,9 @@ class DeviceBridge(QObject):
         self._reconnecting = True
         self._monitor_on = False
         self._monitor_gen += 1
+        self._lost = {"udid": getattr(dead, "udid", "") or getattr(dead, "serial", ""),
+                      "name": getattr(dead, "name", ""), "ios": getattr(dead, "ios", ""),
+                      "model": getattr(dead, "model", "")}
         if self.device is dead:
             self.device = None
         threading.Thread(target=lambda: dead.close(clear=False), daemon=True).start()
@@ -370,14 +377,18 @@ class DeviceBridge(QObject):
             self.reconnecting.emit(attempt)
             core._log(f"reconnect attempt {attempt}")
             try:
-                device = core.connect(on_status=lambda m: self.status.emit(m, theme.AMBER))
+                # this phone, not "whichever is plugged in": it may now be reachable
+                # only over Wi-Fi, through the tunnel daemon
+                lost = self._lost or {}
+                device = core.connect(on_status=lambda m: self.status.emit(m, theme.AMBER),
+                                      serial=lost.get("udid") or None, meta=lost)
                 if cancelled():          # user clicked Stop mid-attempt
                     threading.Thread(target=lambda: device.close(clear=False),
                                      daemon=True).start()
                     return
                 self._reconnecting = False
                 self.device = device
-                core._log(f"reconnected after {attempt} attempt(s) via {device.link}")
+                core._log(f"reconnected after {attempt} attempt(s): {core.describe(device)}")
                 self._emit_connected_status(device)
                 self.connected.emit(device)
                 self._start_monitor()
@@ -427,15 +438,26 @@ class DeviceBridge(QObject):
         Trust request per plug-in, which shows the dialog on the phone."""
         import core
         seen = core.probe(set())                         # cheap: serials + links
+        # phones we know that the tunnel daemon reaches over Wi-Fi, even when
+        # usbmux lists nothing (cable out, usbmux's own Wi-Fi listing flaky)
+        on_mux = {c["serial"] for c in seen}
+        for udid in core.tunneld_udids():
+            if udid in self.known_devices and udid not in on_mux:
+                info = self.known_devices[udid]
+                seen.append({"serial": udid, "link": "Wi-Fi", "state": "ready", "udid": udid,
+                             "name": info.get("name") or "iPhone", "model": info.get("model", ""),
+                             "ios": info.get("ios", "")})
         serials = {c["serial"] for c in seen}
         for gone in set(self._cards) - serials:
             self._cards.pop(gone, None)                  # unplugged: forget it
         fresh = {sr for sr in serials
-                 if self._cards.get(sr, {}).get("state") not in ("ready",)}
+                 if self._cards.get(sr, {}).get("state") not in ("ready",) and sr in on_mux}
         described = {c["serial"]: c for c in core.probe(fresh)} if fresh else {}
         out = []
         for c in seen:
             card = dict(self._cards.get(c["serial"], {}), **described.get(c["serial"], {}))
+            if c["serial"] not in on_mux:
+                card.update(c)                           # the Wi-Fi-only card is complete
             card["link"] = c["link"]
             card["serial"] = c["serial"]
             self._cards[c["serial"]] = card
