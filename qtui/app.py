@@ -86,7 +86,6 @@ class MainWindow(QWidget):
         b.deviceLost.connect(self._on_device_lost)
         b.reconnecting.connect(lambda _n: self.mapscreen.on_reconnecting())
         b.wirelessResult.connect(self._on_wireless_result)
-        b.currentLocation.connect(self.mapscreen.set_real)
         b.heartbeat_source = self.mapscreen.heartbeat_point
         s = self.mapscreen
         s.openSettings.connect(self.sidebar.toggle)
@@ -140,8 +139,8 @@ class MainWindow(QWidget):
             d = store.load_session(last)
             if d:
                 QTimer.singleShot(0, lambda: self.mapscreen.restore_session(last, d))
-        # where are we (approximately)? and which phones are here?
-        self.bridge.locate()
+        # where are we (this Mac, so the phone's real location)? which phones are here?
+        self.mapscreen.locator.request()
         self.bridge.start_visibility()
         # clicking the Dock icon while the window is hidden brings it back (a
         # signal, not an app-wide event filter: that would run Python for every

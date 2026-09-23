@@ -45,6 +45,7 @@ def win(qapp, monkeypatch, tmp_path):
     monkeypatch.setattr(DeviceBridge, "_reconnect_worker", lambda self, gen: None)
     monkeypatch.setattr(DeviceBridge, "start_visibility", lambda self: None)
     monkeypatch.setattr(DeviceBridge, "locate", lambda self: None)
+    monkeypatch.setattr("qtui.locator.Locator.request", lambda self: None)
     monkeypatch.setattr("qtui.app.MainWindow._install_macui", lambda self: None)
     # the confirmations answer Yes (tests that care override this)
     monkeypatch.setattr(QMessageBox, "question",
@@ -701,3 +702,72 @@ class TestLookAndFeel:
         from qtui.widgets import IconButton
         unnamed = [b for b in win.findChildren(IconButton) if not b.accessibleName()]
         assert unnamed == []
+
+
+# ---- after connecting, the iPhone's own location is on the map ---------------
+
+TEMPE = (33.41498, -111.92347)
+
+
+class TestTheIPhoneIsOnTheMap:
+    """Reported: 'after connecting I do not see the iPhone's current location'.
+    The phone's GPS can't be read over the developer link, but it is on this
+    Mac's cable (or Wi-Fi), so this Mac's CoreLocation fix is where it is."""
+
+    def _asked(self, win, monkeypatch):
+        asked = []
+        monkeypatch.setattr(win.mapscreen.locator, "request", lambda: asked.append(True))
+        return asked
+
+    def test_connecting_shows_and_centres_on_the_iphone(self, win, monkeypatch):
+        asked = self._asked(win, monkeypatch)
+        connect(win)
+        assert asked, "connecting didn't look for the phone's location"
+        win.mapscreen.locator.found.emit(*TEMPE, True)
+        sc = win.mapscreen
+        assert sc._real_style[0] == "phone" and sc._real_style[1] == "Your iPhone"
+        assert sc.map.center() == pytest.approx(TEMPE, abs=1e-6)
+        assert sc.map.zoom >= 16
+        assert "real location" in sc.panel.home.hint.text()
+
+    def test_a_restarted_phone_is_shown_too(self, win, monkeypatch):
+        """The exact case that went wrong: iOS updated overnight (a restart), and a
+        spoof from before was on record. The app noticed, but never centred."""
+        asked = self._asked(win, monkeypatch)
+        win.settings["spoofs"] = {"UDID-1": {"lat": 47.6, "lon": -122.3, "name": "Old"}}
+        connect(win, Phone(fresh_mount=True))
+        win.mapscreen.locator.found.emit(*TEMPE, True)
+        sc = win.mapscreen
+        assert asked and sc.spoof is None
+        assert sc._real_style[0] == "phone"
+        assert sc.map.center() == pytest.approx(TEMPE, abs=1e-6)
+
+    def test_an_approximate_fix_says_so_and_a_precise_one_takes_over(self, win, monkeypatch):
+        self._asked(win, monkeypatch)
+        connect(win)
+        sc = win.mapscreen
+        sc.locator.found.emit(33.4306, -111.9256, False)
+        assert sc._real_style[1] == "Your iPhone · approximate"
+        sc.locator.found.emit(*TEMPE, True)
+        assert sc._real_style[1] == "Your iPhone"
+        assert sc.map.center() == pytest.approx(TEMPE, abs=1e-6), "didn't move to the exact fix"
+        sc.locator.found.emit(33.4306, -111.9256, False)
+        assert sc.real == TEMPE, "a city-level guess replaced the exact fix"
+
+    def test_while_spoofing_the_real_location_steps_back(self, win, monkeypatch):
+        self._asked(win, monkeypatch)
+        connect(win)
+        sc = win.mapscreen
+        sc.locator.found.emit(*TEMPE, True)
+        sc._set_spoof(SF)
+        assert sc._real_style[0] == "ring", "the real dot competes with the spoof"
+        sc._on_restored()
+        assert sc._real_style[0] == "phone", "after Stop spoofing the iPhone should be back"
+
+    def test_distances_are_from_the_iphone(self, win, monkeypatch):
+        self._asked(win, monkeypatch)
+        connect(win)
+        sc = win.mapscreen
+        sc.locator.found.emit(*TEMPE, True)
+        sc.drop_pin(33.42, -111.93)
+        assert sc.panel.pin.distance.text().endswith("from your iPhone")

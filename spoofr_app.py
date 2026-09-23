@@ -25,9 +25,23 @@ def main() -> None:
         import server
         server.main()
     elif args and args[0] == "--loctest":
-        # diagnostic: resolve current location (CoreLocation in the bundle) → file
-        from qtui import geo
-        open("/tmp/spoofr_loc.txt", "w").write(str(geo.current_location()))
+        # diagnostic: the same main-thread CoreLocation path the app uses → file
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+        from qtui.locator import Locator
+        app = QApplication(sys.argv[:1])
+        got = []
+
+        def found(lat, lon, precise):
+            got.append((lat, lon, precise))
+            if precise:
+                app.quit()
+        loc = Locator()
+        loc.found.connect(found)
+        loc.request()
+        QTimer.singleShot(15000, app.quit)
+        app.exec()
+        open("/tmp/spoofr_loc.txt", "w").write(str(got[-1] if got else None))
         sys.exit(0)
     elif args and args[0] == "--selftest":
         import importlib
@@ -35,7 +49,7 @@ def main() -> None:
         ok = True
         for m in ("applog", "core", "macui", "portable", "server",
                   "qtui.app", "qtui.geo", "qtui.route", "qtui.tilemap", "qtui.session",
-                  "qtui.panel", "qtui.welcome", "qtui.mapview", "qtui.sidebar",
+                  "qtui.panel", "qtui.welcome", "qtui.mapview", "qtui.sidebar", "qtui.locator",
                   "pymobiledevice3", "pymobiledevice3.__main__",
                   "PySide6.QtWidgets", "PySide6.QtNetwork",
                   "CoreLocation", "geocoder", "requests", "gpxpy", "segno", "psutil"):

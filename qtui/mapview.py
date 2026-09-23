@@ -32,7 +32,10 @@ from PySide6.QtWidgets import (
 )
 
 from . import geo, route, store, theme
-from .markers import SpoofMarker, make_end, make_pin, make_real_marker, make_start, make_stop
+from .locator import Locator
+from .markers import (
+    SpoofMarker, make_end, make_pin, make_real_marker, make_start, make_stop,
+)
 from .panel import ControlPanel, WIDTH as PANEL_W, fmt_distance
 from .session import KMH, Options, Plan, RouteSession, Runner, meters
 from .tilemap import TileMap
@@ -168,7 +171,6 @@ class Banner(QFrame):
         lay.setContentsMargins(14, 8, 8, 8)
         lay.setSpacing(8)
         self.text = label("", 13, 500, wrap=True)
-        self.text.setMaximumWidth(340)
         lay.addWidget(self.text, 1)
         self.a = button("", "primary", height=30)
         self.b = button("", "soft", height=30)
@@ -181,6 +183,11 @@ class Banner(QFrame):
 
     def ask(self, text: str, a: str, on_a, b: str = "", on_b=None):
         self.text.setText(text)
+        # a wrapped QLabel inside a floating widget doesn't get its height from
+        # a layout pass, so the last line was being cut off: size it explicitly
+        w = min(320, self.text.fontMetrics().horizontalAdvance(text) + 6)
+        self.text.setFixedWidth(w)
+        self.text.setFixedHeight(self.text.heightForWidth(w))
         self.a.setText(a)
         self.b.setText(b)
         self.b.setVisible(bool(b))
@@ -256,8 +263,12 @@ class MapScreen(QWidget):
         self.spoof: tuple[float, float] | None = None
         self.spoof_name = ""
         self.real: tuple[float, float] | None = None
+        self.real_precise = False            # CoreLocation fix vs city-level IP guess
+        self._real_style = None
         self._spoof_ov = self._spoof_item = None
         self._real_ov = None
+        self.locator = Locator(self)
+        self.locator.found.connect(self.set_real)
         self._teleport_label: str | None = None
         self._quiet_teleport = False
         self._center_on_real = False
@@ -527,6 +538,7 @@ class MapScreen(QWidget):
                         and not self._browsing and not self._portable
                         and (self.session is None or self._force_welcome))
         self.welcome.setVisible(show_welcome)
+        self._draw_real()                 # "Your iPhone" when it's at its real location
         self._update_pill()
         self._layout()
 
@@ -534,6 +546,7 @@ class MapScreen(QWidget):
         p = self.panel.page
         if p == "home":
             self.panel.home.refresh()
+            self.panel.home.hint.setText(self._home_hint())
         elif p == "pin":
             self._render_pin()
         elif p == "builder":
@@ -676,7 +689,8 @@ class MapScreen(QWidget):
             rec = self._spoof_record(udid)
             if rec and fresh:
                 self._set_spoof(None)
-                self.banner.ask("Your iPhone restarted, which put it back on its real location.",
+                self._show_real_phone()
+                self.banner.ask("Your iPhone restarted, so it’s back on its real location.",
                                 "Re-apply location",
                                 lambda: self.teleport_to(rec["lat"], rec["lon"], rec.get("name", "")),
                                 "Keep real location", self._forget_spoof)
@@ -689,10 +703,7 @@ class MapScreen(QWidget):
                 self._quiet_teleport = True
                 self.bridge.set_location(rec["lat"], rec["lon"])
             else:
-                self._center_on_real = True
-                if self.real is not None:
-                    self.set_real(*self.real)
-                self.bridge.locate()
+                self._show_real_phone()
             self._maybe_offer_resume(udid)
         self._sync_chrome()
 
@@ -747,7 +758,11 @@ class MapScreen(QWidget):
             if self._spoof_ov is None:
                 self._spoof_item = SpoofMarker()
                 self._spoof_item.set_pulsing(self._pulse)
-                self._spoof_ov = self.map.add_item(self._spoof_item, pos[0], pos[1])
+                # leaving the real location: the dot glides away from "Your iPhone"
+                src = self.real if (animate and self.real is not None) else pos
+                self._spoof_ov = self.map.add_item(self._spoof_item, src[0], src[1])
+                if src != pos:
+                    self._glide_to(pos, 260)
             elif animate:
                 ms = animate if isinstance(animate, int) and not isinstance(animate, bool) else 220
                 self._glide_to(pos, ms)
@@ -764,6 +779,7 @@ class MapScreen(QWidget):
             self._spoof_ov = self._spoof_item = None
             self.readout.emit("")
         self.panel.set_spoofing(pos is not None and self.conn_state == "connected")
+        self._draw_real()
 
     def _glide_to(self, pos, ms: int):
         """Move the spoofed marker smoothly (purely visual; the phone jumps)."""
@@ -787,17 +803,71 @@ class MapScreen(QWidget):
         (a0, o0), (a1, o1) = self._glide_from, self._glide_dest
         self.map.move_marker(self._spoof_ov, a0 + (a1 - a0) * f, o0 + (o1 - o0) * f)
 
-    def set_real(self, lat: float, lon: float):
-        """The phone's real location as best we know it: this Mac's, approximate."""
+    def _show_real_phone(self):
+        """The phone is at its real location: show it and fly there (again when
+        a more exact fix arrives, unless the user has moved the map since)."""
+        self._center_on_real = True
+        if self.real is not None:
+            self.set_real(self.real[0], self.real[1], self.real_precise)
+        self.locator.request()
+
+    def set_real(self, lat: float, lon: float, precise: bool = True):
+        """The phone's real location: this Mac's (the phone is on its cable or its
+        Wi-Fi). `precise` is a CoreLocation fix; otherwise a city-level guess."""
+        if self.real_precise and not precise and self.real is not None:
+            return                    # never downgrade an exact fix to a city guess
         self.real = (lat, lon)
-        pm, off = make_real_marker()
+        self.real_precise = precise
+        self._draw_real()
+        if (self._center_on_real or not self.settings.get("view")) and self.spoof is None:
+            self.map.set_view(lat, lon, max(16 if precise else 13, self.map.zoom))
+            if precise:
+                self._center_on_real = False
+        if self.panel.page == "home":
+            self.panel.home.hint.setText(self._home_hint())
+        if self.pin is not None:
+            self._render_pin()
+
+    def _real_label(self) -> str:
+        return "Your iPhone" if self.real_precise else "Your iPhone · approximate"
+
+    def _draw_real(self):
+        """Prominent and labelled while the phone is at its real location; the
+        brief's subtle hollow dot while a spoof is on (it mustn't compete)."""
+        if self.real is None:
+            return
+        lat, lon = self.real
+        connected = self.conn_state == "connected"
+        if connected and self.spoof is None:
+            style = ("phone", self._real_label(), theme.scheme)
+        else:
+            text = "real location" if self.spoof is not None else "approximate"
+            style = ("ring", text, theme.scheme)
+        if self._real_ov is not None and style != self._real_style:
+            self.map.remove_overlay(self._real_ov)
+            self._real_ov = None
         if self._real_ov is None:
-            self._real_ov = self.map.add_marker(lat, lon, pm, z=9, offset=off)
+            if style[0] == "phone":
+                # the same pulsing blue dot as a spoofed location: "the phone is here"
+                item = SpoofMarker(label=style[1])
+                item.set_pulsing(self._pulse)
+                self._real_ov = self.map.add_item(item, lat, lon)
+            else:
+                pm, off = make_real_marker(style[1])
+                self._real_ov = self.map.add_marker(lat, lon, pm, z=9, offset=off)
+            self._real_style = style
         else:
             self.map.move_marker(self._real_ov, lat, lon)
-        if (self._center_on_real or not self.settings.get("view")) and self.spoof is None:
-            self._center_on_real = False
-            self.map.set_view(lat, lon, max(14, self.map.zoom))
+
+    def _home_hint(self) -> str:
+        if self.conn_state == "connected":
+            if self.spoof is None:
+                return ("Your iPhone is at its real location" +
+                        ("" if self.real_precise else " (approximately)") +
+                        ". Click the map to drop a pin.")
+            where = self.spoof_name or f"{self.spoof[0]:.5f}, {self.spoof[1]:.5f}"
+            return f"Your iPhone is set to {where}. Click the map to drop a pin."
+        return "Click the map to drop a pin."
 
     def _on_located(self, lat: float, lon: float):
         """A fix landed on the phone (teleport)."""
@@ -818,6 +888,9 @@ class MapScreen(QWidget):
         self._set_spoof(None)
         self._persist_spoof()
         self.show_toast("Your iPhone is using its real location again.")
+        self._show_real_phone()
+        if self.real is not None:
+            self.map.pan_to(self.real[0], self.real[1], animate_ms=300)
         self._sync_chrome()
 
     # ------------------------------------------------------------------ pins
@@ -904,7 +977,9 @@ class MapScreen(QWidget):
         ref = self.spoof or self.real
         dist = ""
         if ref is not None:
-            whose = "your iPhone" if self.spoof else "you (approximately)"
+            whose = ("your iPhone" if self.spoof or (self.conn_state == "connected" and self.real_precise)
+                     else "your iPhone (approximately)" if self.conn_state == "connected"
+                     else "you (approximately)")
             dist = f"{fmt_distance(meters(ref, (p['lat'], p['lon'])), self.units)} from {whose}"
         self.panel.pin.show_info(title, sub, p["lat"], p["lon"], dist, self._is_starred(p))
         self._layout()
@@ -1077,6 +1152,9 @@ class MapScreen(QWidget):
         if self.spoof is not None:
             return self.spoof, "Your iPhone’s location"
         if self.real is not None:
+            if self.conn_state == "connected":
+                return self.real, ("Your iPhone’s real location" if self.real_precise
+                                   else "Your iPhone (approximate)")
             return self.real, "Your location (approximate)"
         return None, "Set a location first"
 
@@ -1928,6 +2006,8 @@ class MapScreen(QWidget):
         self._pulse = bool(on)
         if self._spoof_item is not None:
             self._spoof_item.set_pulsing(self._pulse)
+        if self._real_ov is not None and isinstance(self._real_ov.item, SpoofMarker):
+            self._real_ov.item.set_pulsing(self._pulse)
 
     def set_walk_pad(self, on: bool):
         self._pad_wanted = bool(on)
@@ -1970,8 +2050,8 @@ class MapScreen(QWidget):
         self._pin_px = make_pin()
         if self._pin_ov is not None:
             self.map.set_marker_pixmap(self._pin_ov, self._pin_px)
-        if self._real_ov is not None:
-            self.map.set_marker_pixmap(self._real_ov, make_real_marker()[0])
+        self._real_style = None           # redraw in the new appearance
+        self._draw_real()
         self._glass.setPixmap(icon_search())
         if self.session is not None:
             self._redraw_session_overlays()

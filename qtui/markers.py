@@ -2,8 +2,9 @@
 
 - SpoofMarker: where the iPhone is set to. The accent colour, gently pulsing,
   with a heading arrow while it moves. It glides between positions.
-- make_real_marker: the phone's real location as far as we can know it — a
-  subtle hollow grey dot, labelled "approximate" (it is really this Mac's).
+  The same dot, labelled "Your iPhone", marks the phone at its real location.
+- make_real_marker: the real location while a spoof is active — the subtle
+  hollow grey dot the brief asks for, so it never competes with the spoof.
 - make_pin: a dropped pin, a candidate, not a location.
 - make_start / make_end / make_stop: the route's ends and numbered stops.
 """
@@ -135,14 +136,19 @@ def make_waypoint(n: int, color: str | None = None, size: int = 22) -> QPixmap:
 
 
 class SpoofMarker(QGraphicsObject):
-    """Where the iPhone is set to: an accent dot with a white ring, a soft pulse,
-    and a heading arrow while it's moving. Constant on-screen size."""
+    """Where the iPhone is right now: an accent dot with a white ring, a soft
+    pulse, and a heading arrow while it's moving. Constant on-screen size.
 
-    def __init__(self, size: int = 48):
+    It is the same dot whether the phone is at its real location (labelled
+    "Your iPhone") or at a spoofed one: one marker means "the phone is here",
+    like the blue dot in Maps."""
+
+    def __init__(self, size: int = 48, label: str = ""):
         super().__init__()
         self._size = size
         self._phase = 0.0
         self._heading: float | None = None
+        self._label = label
         self.setFlag(QGraphicsObject.GraphicsItemFlag.ItemIgnoresTransformations, True)
         self.setZValue(20)
         self._anim = QPropertyAnimation(self, b"phase", self)
@@ -155,7 +161,16 @@ class SpoofMarker(QGraphicsObject):
 
     def boundingRect(self) -> QRectF:
         s = self._size
+        if self._label:
+            w = max(s, 12.0 * len(self._label) * 0.62 + 24)
+            return QRectF(-w / 2, -s / 2, w, s / 2 + 36)
         return QRectF(-s / 2, -s / 2, s, s)
+
+    def set_label(self, text: str):
+        if text != self._label:
+            self.prepareGeometryChange()
+            self._label = text
+            self.update()
 
     def set_heading(self, deg: float | None):
         if deg != self._heading:
@@ -190,6 +205,17 @@ class SpoofMarker(QGraphicsObject):
         p.drawEllipse(QPointF(0, 0), s * 0.20, s * 0.20)
         p.setBrush(accent)
         p.drawEllipse(QPointF(0, 0), s * 0.14, s * 0.14)
+        if self._label:
+            f = theme.ui_font(11, weight=600)
+            from PySide6.QtGui import QFontMetricsF
+            tw = QFontMetricsF(f).horizontalAdvance(self._label)
+            chip = QRectF(-tw / 2 - 8, s * 0.30, tw + 16, 20)
+            p.setBrush(QColor(theme.PANEL))
+            p.setPen(QPen(QColor(0, 0, 0, 50), 1))
+            p.drawRoundedRect(chip, 10, 10)
+            p.setFont(f)
+            p.setPen(QColor(theme.TEXT))
+            p.drawText(chip, Qt.AlignmentFlag.AlignCenter, self._label)
 
     def _get_phase(self) -> float:
         return self._phase
