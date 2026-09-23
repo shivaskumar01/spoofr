@@ -10,6 +10,7 @@ So nothing here ever touches widgets directly; the window just connects slots.
 from __future__ import annotations
 
 import threading
+import time
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Signal
@@ -39,12 +40,15 @@ class DeviceBridge(QObject):
     deviceLost = Signal()                    # gone for good (reconnect gave up / cancelled)
     reconnecting = Signal(int)               # session dropped; auto-rebuild attempt #n
     visible = Signal(str)                    # idle pre-flight: "", "USB", "Wi-Fi", "USB + Wi-Fi"
+    phones = Signal(object)                  # [card dict] for every visible iPhone
     wirelessResult = Signal(bool, str)       # one-time wireless enable: ok, message
 
     RECONNECT_WINDOW = 120.0                 # seconds to keep trying before giving up
     CONNECT_ATTEMPTS = 3                     # a first plug-in is often not ready at once
     CONNECT_BACKOFF = 2.0                    # seconds, multiplied by the attempt number
+    LOCKED_WAIT = 90.0                       # keep retrying a locked phone this long
     HEARTBEAT_EVERY = 15.0                   # s between channel-liveness re-asserts
+    DISCOVER_EVERY = 1.5                     # s between looks for plugged-in phones
 
     def __init__(self):
         super().__init__()
@@ -58,12 +62,16 @@ class DeviceBridge(QObject):
         self._reconnecting = False
         self._reconnect_gen = 0
         self._vis_gen = 0
+        self._want_serial: str | None = None
+        self._cards: dict[str, dict] = {}    # serial -> last card (lockdown is slow)
+        self._trusting: set[str] = set()     # serials with a Trust request in flight
 
     # ---- connect --------------------------------------------------------
 
-    def connect(self):
+    def connect(self, serial: str | None = None):
         if self._connecting:
             return
+        self._want_serial = serial
         self._reconnecting = False      # a manual connect takes over from any auto-retry
         self._reconnect_gen += 1
         self._connecting = True
@@ -88,12 +96,32 @@ class DeviceBridge(QObject):
 
         last = None
         restarted_tunnel = False
+        locked_until = None
+        want = self._want_serial
         try:
-            for attempt in range(1, self.CONNECT_ATTEMPTS + 1):
+            attempt = 0
+            while attempt < self.CONNECT_ATTEMPTS:
+                attempt += 1
                 try:
                     portable.ensure_tunnel()   # one admin prompt, only if needed
+                    kw = {"serial": want} if want else {}
                     device = core.connect(
-                        on_status=lambda m: self.status.emit(m, theme.AMBER))
+                        on_status=lambda m: self.status.emit(m, theme.AMBER), **kw)
+                except getattr(core, "PhoneLocked", ()) as e:
+                    # a locked phone is the one thing worth waiting on: it tells
+                    # the user what to do, and carries on by itself once unlocked
+                    last = e
+                    locked_until = locked_until or time.monotonic() + self.LOCKED_WAIT
+                    if time.monotonic() > locked_until:
+                        break
+                    self.status.emit("Unlock your iPhone", theme.AMBER)
+                    self.hint.emit(core.LOCKED_MSG)
+                    attempt -= 1               # waiting on the user is not a failed try
+                    time.sleep(2.0)
+                    continue
+                except getattr(core, "NeedsTrust", ()) as e:
+                    last = e                   # the discovery card walks them through it
+                    break
                 except core.DeveloperModeRequired:
                     self.status.emit("Developer Mode needed", theme.AMBER)
                     self.devModeRequired.emit()
@@ -128,9 +156,10 @@ class DeviceBridge(QObject):
                 self._start_monitor()
                 return
 
-            core._log(f"connect gave up after {self.CONNECT_ATTEMPTS} attempts: {last!r}")
+            core._log(f"connect gave up after {attempt} attempts: {last!r}")
             self.status.emit("Not connected", theme.RED)
-            self.failed.emit(str(last))
+            human = getattr(core, "human_error", str)
+            self.failed.emit(human(last) if last is not None else "Couldn’t connect.")
         finally:
             self._connecting = False
 
@@ -381,15 +410,59 @@ class DeviceBridge(QObject):
         self._vis_gen += 1
 
     def _vis_worker(self, gen: int):
-        import time
-        import core      # first poll also warms the heavy import off-thread
+        __import__("core")      # warm the heavy import off the GUI thread
         while gen == self._vis_gen:
             if self.device is None and not self._connecting and not self._reconnecting:
-                kinds = core.visible_kinds()
+                cards = self.discover()
                 if gen != self._vis_gen:
                     return
-                self.visible.emit(kinds)
-            time.sleep(4.0)
+                self.phones.emit(cards)
+                kinds = sorted({c["link"] for c in cards if c.get("link")})
+                self.visible.emit(" + ".join(kinds) if len(kinds) > 1 else (kinds[0] if kinds else ""))
+            time.sleep(self.DISCOVER_EVERY)
+
+    def discover(self) -> list[dict]:
+        """Every visible iPhone as a card. The slow lockdown query only runs for
+        phones that are new or not ready yet; a phone that isn't trusted gets one
+        Trust request per plug-in, which shows the dialog on the phone."""
+        import core
+        seen = core.probe(set())                         # cheap: serials + links
+        serials = {c["serial"] for c in seen}
+        for gone in set(self._cards) - serials:
+            self._cards.pop(gone, None)                  # unplugged: forget it
+        fresh = {sr for sr in serials
+                 if self._cards.get(sr, {}).get("state") not in ("ready",)}
+        described = {c["serial"]: c for c in core.probe(fresh)} if fresh else {}
+        out = []
+        for c in seen:
+            card = dict(self._cards.get(c["serial"], {}), **described.get(c["serial"], {}))
+            card["link"] = c["link"]
+            card["serial"] = c["serial"]
+            self._cards[c["serial"]] = card
+            if card.get("state") == "trust" and c["serial"] not in self._trusting:
+                self._trusting.add(c["serial"])
+                threading.Thread(target=self._trust_worker, args=(c["serial"],),
+                                 daemon=True).start()
+            out.append(dict(card))
+        return out
+
+    def _trust_worker(self, serial: str):
+        import core
+        try:
+            while serial in self._cards and self.device is None:
+                result = core.request_trust(serial)
+                card = self._cards.get(serial)
+                if card is None:
+                    return
+                if result == "trusted":
+                    card["state"] = "unknown"            # re-describe on the next look
+                    return
+                card["state"] = {"locked": "trust_locked", "denied": "denied"}.get(result, "trust")
+                if result == "denied":
+                    return                                # replug to be asked again
+                time.sleep(3.0)
+        finally:
+            self._trusting.discard(serial)
 
     # ---- one-time wireless enable ----------------------------------------
 

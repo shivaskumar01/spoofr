@@ -15,14 +15,11 @@ token (`SPOOFER_TOKEN`) is generated for you, so there is nothing to input.
 
 ## How it works
 
-Spoofr is a native Mac app (PySide6, in `qtui/`) with a This Mac / iPhone switch.
-
-- This Mac: a calm, full-bleed dark map with floating controls. Click to drop a pin and
-  set your location, walk with the pad or the arrow keys, or click a destination and
-  walk a route (optionally along real roads), with the distance and time shown before
-  you press Start.
-- iPhone: it shows a QR code. Scan it and control everything from your phone's browser
-  over the same Wi-Fi. The Mac stays the host. The phone is the remote.
+Spoofr is a native Mac app (PySide6, in `qtui/`). The map fills the window and
+everything else floats on it: the status pill top-left (which phone, and whether
+it's on the cable or Wi-Fi), search top-centre, the control panel on the right, and
+recenter / zoom / map style (Standard, Satellite, Hybrid) bottom-right. It follows
+the system's light or dark appearance, map included.
 
 Apple's location override is a host-to-device developer command, so a host is always
 in the loop. There is no jailbreak-free way to run this on the phone alone.
@@ -84,32 +81,47 @@ Rebuilding the bundle changes its code signature (it is ad-hoc signed, not
 Developer-ID), so macOS treats it as a new app and asks for Location permission again.
 That's expected, not a bug.
 
-- This Mac: Connect, click the map, then Set location here. Route mode needs one click:
-  your iPhone is already somewhere, so that click is the destination and the route starts
-  from where the phone is. Extra clicks add stops along the way (↶ removes the last one).
-  The route card at the bottom of the map picks the pace (Walk, Run, Cycle, or Drive) and
-  shows the distance and time before you start; loop, bounce, and GPX import and export
-  live in ☰ ▸ Route. With "Follow real roads" on, the planned line redraws along real
-  streets for the pace you picked — a walk takes footpaths, a drive takes roads — and
-  Start plays exactly the line on screen. Each fix is pushed once a second, like a real
-  GPS. A cyan track trails behind the marker, and the card shows the percentage and time
-  left. Restore GPS clears the spoof. The panic hotkey ⌃⌥⌘R restores real GPS from
-  anywhere. Places you set are kept in ☰ ▸ Places under their real names.
+- **Connect.** Plug the phone in. It shows up as a card (name, model, iOS) within a
+  second or two; press Connect. A phone that hasn't trusted this Mac says so and
+  carries on by itself once you tap Trust, and Developer Mode (one time) is walked
+  through step by step. After the first connect the phone is remembered and connects
+  on its own (Settings ▸ Connect automatically).
+- **Teleport.** Click the map to drop a pin (drag it to fine-tune). Its card shows the
+  address, the coordinates (click to copy), how far it is from the phone, and a star to
+  keep it. Teleport here (T) moves the phone. Places lists your last 20 destinations and
+  starred places; one click goes there again.
+- **Routes.** Route here (R) plans a route from wherever the phone is. Click the map to
+  add stops, drag to reorder. Follow roads (walking, cycling, driving), a straight line,
+  or draw your own. Speed presets are Walk 5, Jog 9, Cycle 18 and Drive 50 km/h, or any
+  custom speed, in km/h or mph. More options: stop, loop or ping-pong at the end, laps
+  (or forever), a pause at each stop, ±10% speed variation, GPS jitter. The distance and
+  time update as you change anything, and Start plays exactly the line on screen. While
+  it runs you can pause (Space), change speed without the phone jumping, follow it on the
+  map, or stop (stay there, or go back to the real location). Routes can be saved,
+  duplicated, and imported or exported as GPX.
+- **Unplugging.** A route runs on the clock, not on how many fixes got through. With
+  Wi-Fi control on, unplug and it keeps moving the phone over Wi-Fi. Without it, or if
+  the phone goes out of reach, the phone holds its last spot, the pill turns amber, and
+  when it's back the route either catches up to where it would be now or continues from
+  where it stopped (your choice, asked once). The route is saved continuously, so a quit,
+  a crash or a Mac restart shows a Resume banner next time, and a phone that restarted
+  meanwhile is noticed and offered "Re-apply location" or "Resume route".
+- **While a route runs** the Mac stays awake (with a warning on low battery), closing the
+  window keeps it going from the menu-bar item (◉ with its progress, plus Pause, Stop
+  and Open), and quitting asks first.
+- **Stop spoofing** (⌘., or ⌃⌥⌘R from anywhere) puts the real location back. As a last
+  resort, restarting the iPhone always does too.
+- **iPhone control:** status pill ▸ Control from your iPhone shows a QR code; scan it and
+  drive everything from the phone's browser on the same Wi-Fi.
 
-  You can unplug straight after pressing Start. A route runs on the clock, not on how
-  many fixes got through: start a twenty-minute route at 6:30 and it is finished at 6:50
-  whether the phone was reachable for all of it, some of it, or none of it. Unplug at
-  6:33 and plug back in at 6:49 and the phone jumps to the 6:49 point with a minute to
-  go; leave it unplugged past 6:50 and it lands on the destination, completed, the moment
-  it is reachable again. Spoofr reconnects on its own when it sees the phone, so there is
-  nothing to click, and only Stop ends a route. The one thing that must stay put is the
-  Mac: it pushes every fix, so Spoofr has to stay open (it holds off idle sleep while a
-  route plays).
-- iPhone: click the iPhone tab, scan the QR with your Camera, and control it from Safari.
+What iOS doesn't allow, so Spoofr doesn't pretend to: the phone's own GPS can't be read
+over the developer connection, so "where you really are" is this Mac's location, marked
+*approximate*; and the location API takes latitude and longitude only, so heading is
+shown on the Mac's map and iOS derives the phone's own from the movement.
 
 For a dev run: `.venv/bin/python -m qtui`. The basemap is `DEFAULT_SOURCE` in
-`qtui/tilemap.py` — Esri's street map, desaturated and inverted on arrival into the
-dark canvas the rest of the UI is built around. It needs no API key, which is the
+`qtui/tilemap.py` — Esri's street map, recoloured on arrival into the navy canvas in
+dark mode and softened in light mode. It needs no API key, which is the
 whole point: CARTO's dark basemap now stamps "API KEY REQUIRED" across every tile
 while still answering HTTP 200, so nothing in the fetch path can tell it failed.
 The phone's map (`web/app.js`) uses the same source, inverted in MapLibre's raster
@@ -148,7 +160,8 @@ token-gated and LAN-only by design, so don't port-forward it.
 ## Layout
 
 ```
-qtui/          # the app: app, mapview, tilemap, bridge, sidebar, markers, and more
+qtui/          # the app: app, mapview (the controller), panel, session (the route
+               # engine), tilemap, bridge, welcome, sidebar, markers, and more
 core.py        # pymobiledevice3 engine: tunnel, mount, set/clear/route, wireless
 portable.py    # iPhone mode: tunnel elevation, runs the phone server, makes the QR
 server.py      # stdlib HTTP control server for the phone

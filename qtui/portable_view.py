@@ -11,7 +11,7 @@ import threading
 import time
 
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QColor, QPainter, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout
 
 from . import theme
@@ -73,9 +73,11 @@ class PortableController(QObject):
 
 
 class PortableView(QFrame):
+    """The QR card, shown over the map while the phone is in control."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("Root")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         outer = QVBoxLayout(self)
         outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -105,6 +107,7 @@ class PortableView(QFrame):
         self.qr.setFixedSize(232, 232)
         self.qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.qr.setStyleSheet("color: #5b6780; background: #ffffff; border-radius: 16px;")
+        self.qr.setAccessibleName("QR code to open Spoofr on your iPhone")
         c.addWidget(self.qr, alignment=Qt.AlignmentFlag.AlignHCenter)
         c.addSpacing(18)
 
@@ -128,6 +131,9 @@ class PortableView(QFrame):
         link.addWidget(self.url, 1)
         link.addWidget(self.copy_btn)
         c.addLayout(link)
+        c.addSpacing(14)
+        self.back_btn = button("Back to this Mac", "primary", height=36)
+        c.addWidget(self.back_btn)
 
         outer.addWidget(card)
 
@@ -154,3 +160,9 @@ class PortableView(QFrame):
     def set_status(self, text: str, color: str):
         self.status.setText(text)
         self._dot.set_color(color)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        c = QColor(theme.BG)
+        c.setAlpha(225)
+        p.fillRect(self.rect(), c)

@@ -1,21 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller spec for the native Qt Spoofr.app.
 
-Bundles the qtui app + device core (pymobiledevice3) + ipsw, with the location
-usage description so CoreLocation can give a precise fix from one native prompt.
+Bundles the qtui app + device core (pymobiledevice3), with the location usage
+description so CoreLocation can give a precise fix from one native prompt.
 Heavy unused Qt modules are excluded to keep PySide6 (1.1 GB on disk) manageable.
+
+No `ipsw` binary any more: pymobiledevice3 11 downloads the personalized developer
+image itself and never shells out to it, so the 71 MB CLI was dead weight (and it
+pushed the zipped download past GitHub's 100 MB file limit).
 """
-import glob
-import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 datas = [('web', 'web')]
 binaries = []
-for _c in (glob.glob('/opt/homebrew/Caskroom/ipsw/*/ipsw')
-           + ['/opt/homebrew/bin/ipsw', '/usr/local/bin/ipsw']):
-    if os.path.exists(_c):
-        binaries.append((_c, 'bin'))
-        break
 
 hiddenimports = ['applog', 'core', 'portable', 'server', 'macui', 'pymobiledevice3.__main__',
                  'CoreLocation', 'Foundation', 'AppKit', 'objc', 'segno', 'requests']
@@ -41,6 +38,9 @@ excludes = [
     'PySide6.QtWebSockets', 'PySide6.QtWebChannel', 'PySide6.QtRemoteObjects',
     'PySide6.QtScxml', 'PySide6.QtSensors', 'PySide6.QtSpatialAudio',
     'PySide6.QtTextToSpeech', 'PySide6.QtHttpServer', 'PySide6.QtDBus',
+    # pymobiledevice3's interactive shell and screencast, never used here (the
+    # tunnel helper's import path was checked: it touches none of these)
+    'IPython', 'jedi', 'parso', 'PIL',
 ]
 
 a = Analysis(

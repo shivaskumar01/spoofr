@@ -25,15 +25,11 @@ from __future__ import annotations
 import os
 import sys
 
-# pymobiledevice3 shells out to the `ipsw` CLI (installed via Homebrew) to build
-# the personalized developer image. Launching with sudo replaces PATH with a
-# minimal secure_path that omits Homebrew, so `ipsw` wouldn't be found and the
-# mount would stall. Restore the Homebrew dirs *before* importing pymobiledevice3,
-# which transitively imports plumbum and snapshots PATH for command lookup.
-if getattr(sys, "frozen", False):  # bundled app: find the ipsw binary we ship inside it
-    _bundle_bin = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(sys.executable)), "bin")
-    if os.path.isdir(_bundle_bin):
-        os.environ["PATH"] = _bundle_bin + os.pathsep + os.environ.get("PATH", "")
+# pymobiledevice3 11 downloads the personalized developer image itself; older
+# releases shelled out to the `ipsw` CLI for it, which is why the app once bundled
+# that binary. Keeping Homebrew on PATH is still cheap insurance: launching with
+# sudo replaces PATH with a secure_path that omits it, and plumbum (imported by
+# pymobiledevice3) snapshots PATH at import for any command it looks up.
 for _brew in ("/opt/homebrew/bin", "/usr/local/bin"):
     if os.path.isdir(_brew) and _brew not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + _brew
@@ -56,7 +52,11 @@ from applog import log as _log
 from pymobiledevice3.exceptions import (
     AlreadyMountedError,
     DeveloperModeIsNotEnabledError,
+    NotPairedError,
+    PairingDialogResponsePendingError,
+    PasswordRequiredError,
     TunneldConnectionError,
+    UserDeniedPairingError,
 )
 from pymobiledevice3.lockdown import create_using_usbmux
 from pymobiledevice3.services.amfi import AmfiService
@@ -106,6 +106,44 @@ class NoDeviceFound(SpooferError):
 class TunnelNotReady(SpooferError):
     """The daemon is running but hasn't opened a tunnel to this iPhone yet.
     Worth retrying, and worth restarting the daemon over; never a trust problem."""
+
+
+class PhoneLocked(SpooferError):
+    """The iPhone has to be unlocked for this step. Worth retrying on its own."""
+
+
+class NeedsTrust(SpooferError):
+    """The iPhone hasn't trusted this Mac yet (or said Don't Trust)."""
+
+
+LOCKED_MSG = "Your iPhone is locked. Unlock it and it will carry on."
+TRUST_MSG = "Unlock your iPhone and tap Trust."
+DENIED_MSG = ("Your iPhone said Don’t Trust. Unplug it, plug it back in, and tap Trust "
+              "this time.")
+
+
+def human_error(e: BaseException) -> str:
+    """A sentence a person can act on, never a raw exception name or code."""
+    if isinstance(e, SpooferError):
+        return str(e)
+    if isinstance(e, PasswordRequiredError):
+        return LOCKED_MSG
+    if isinstance(e, UserDeniedPairingError):
+        return DENIED_MSG
+    if isinstance(e, (NotPairedError, PairingDialogResponsePendingError)):
+        return TRUST_MSG
+    if isinstance(e, PermissionError):
+        return str(e) or "The administrator password was cancelled."
+    text = str(e).strip()
+    looks_raw = (
+        not text or len(text) > 240 or " " not in text          # a bare token or code
+        or text.startswith(("<", "{", "[", "("))
+        or re.search(r"0x[0-9A-Fa-f]{4,}|\[Errno \d+\]|errno|Traceback|Error\(", text)
+    )
+    if looks_raw:
+        return ("Couldn’t talk to your iPhone. Unplug it, plug it back in, unlock it, "
+                "and try again.")
+    return text
 
 
 class Cancelled(SpooferError):
@@ -250,6 +288,11 @@ class Device:
     serial: str = ""               # usbmux serial, for liveness checks
     link: str = "USB"              # how the phone is visible: "USB" / "Wi-Fi" / "USB + Wi-Fi"
     wireless_on: bool = False      # EnableWifiConnections, cable-free control available
+    udid: str = ""                 # stable identity: sessions and settings are per phone
+    model: str = ""                # "iPhone 17 Pro"
+    # the developer image had to be mounted on this connect. It never survives a
+    # restart, so with a spoof on record this means the phone restarted and lost it
+    fresh_mount: bool = False
     _lock: "threading.Lock" = field(default_factory=threading.Lock)
     _epoch: int = 0                # bumped by suspend(); invalidates in-flight set()s
     _inflight: object = None       # the device call running right now, so suspend() can cut it
@@ -390,11 +433,12 @@ class Device:
                 self._lock.release()
 
 
-def connect(on_status: Optional[StatusFn] = None) -> Device:
-    """Start/attach the tunnel and open a spoofing session against the iPhone.
+def connect(on_status: Optional[StatusFn] = None, serial: Optional[str] = None) -> Device:
+    """Start/attach the tunnel and open a spoofing session against the iPhone
+    (`serial`, or the first one visible, cable preferred).
 
-    Launch the app with sudo so the tunnel can be created. `on_status`, if given,
-    receives short progress strings and may be called from a background thread.
+    `on_status`, if given, receives short progress strings and may be called from
+    a background thread.
     """
     def say(msg: str) -> None:
         if on_status:
@@ -402,7 +446,84 @@ def connect(on_status: Optional[StatusFn] = None) -> Device:
 
     say("Starting the tunnel…")
     _tunneld.ensure()
-    return _loop.run(_open(say), CONNECT_TIMEOUT)
+    return _loop.run(_open(say, serial), CONNECT_TIMEOUT)
+
+
+# --- discovery: what is plugged in, and is it ready? --------------------------
+
+def probe(serials: Optional[set] = None) -> list[dict]:
+    """Every visible iPhone as a card: name, model, iOS, link, and whether it
+    trusts this Mac yet. `serials` limits the (slower) lockdown query to those;
+    the rest come back with just their serial and link. Blocking, bounded."""
+    try:
+        return _loop.run(_probe(serials), USBMUX_TIMEOUT + 2 * LOCKDOWN_TIMEOUT)
+    except Exception:
+        return []
+
+
+async def _probe(serials: Optional[set]) -> list[dict]:
+    try:
+        devices = await list_devices()
+    except Exception:
+        return []
+    kinds: dict[str, set] = {}
+    for d in devices:
+        kinds.setdefault(d.serial, set()).add(d.connection_type)
+    out = []
+    for serial, k in kinds.items():
+        card = {"serial": serial, "link": _kinds_to_link(k), "state": "unknown"}
+        if serials is None or serial in serials:
+            card.update(await _describe(serial))
+        out.append(card)
+    return out
+
+
+async def _describe(serial: str) -> dict:
+    """Identity + trust state, without ever triggering the Trust dialog."""
+    try:
+        lockdown = await asyncio.wait_for(
+            create_using_usbmux(serial, autopair=False), LOCKDOWN_TIMEOUT)
+    except PasswordRequiredError:
+        return {"state": "locked"}
+    except Exception as e:
+        return {"state": "error", "error": human_error(e)}
+    try:
+        v = lockdown.all_values or {}
+        model = lockdown.display_name or v.get("ProductType") or "iPhone"
+        return {
+            "udid": lockdown.udid or serial,
+            "name": v.get("DeviceName") or model,
+            "model": model,
+            "ios": lockdown.product_version or "",
+            "state": "ready" if lockdown.paired else "trust",
+        }
+    finally:
+        try:
+            await asyncio.wait_for(lockdown.close(), 5)
+        except Exception:
+            pass
+
+
+def request_trust(serial: str, wait: float = 60.0) -> str:
+    """Ask the iPhone to trust this Mac (it shows the Trust dialog) and wait for
+    the answer: "trusted", "locked" (unlock it first), "denied", or "waiting"."""
+    try:
+        _loop.run(_request_trust(serial, wait), wait + LOCKDOWN_TIMEOUT)
+        return "trusted"
+    except PasswordRequiredError:
+        return "locked"
+    except UserDeniedPairingError:
+        return "denied"
+    except Exception:
+        return "waiting"
+
+
+async def _request_trust(serial: str, wait: float) -> None:
+    lockdown = await create_using_usbmux(serial, autopair=True, pair_timeout=wait)
+    try:
+        await lockdown.close()
+    except Exception:
+        pass
 
 
 def _kinds_to_link(kinds: set[str]) -> str:
@@ -534,14 +655,16 @@ async def _reveal_dev_mode() -> None:
             pass
 
 
-async def _open(say: StatusFn) -> Device:
+async def _open(say: StatusFn, want: Optional[str] = None) -> Device:
     say("Looking for your iPhone…")
     muxed = await _bounded(list_devices(), 10,
-                           "Couldn’t reach usbmuxd (the USB device service).")
+                           "Couldn’t reach the Mac’s iPhone service. Unplug the phone, "
+                           "plug it back in, and try again.")
+    if want:
+        muxed = [d for d in muxed if d.serial == want] or muxed
     if not muxed:
-        raise NoDeviceFound("No iPhone reachable. Plug it in and tap “Trust”, or go "
-                            "cable-free: menu ▸ Settings ▸ “Go wireless” (one-time, with "
-                            "the cable in), then stay on the same Wi-Fi.")
+        raise NoDeviceFound("Your iPhone isn’t showing up. Plug it in with a cable, "
+                            "unlock it, and tap Trust if it asks.")
     # prefer the cable when both links exist, faster and steadier for the
     # lockdown/mount phase; Wi-Fi-only devices still work
     muxed.sort(key=lambda d: d.connection_type != "USB")
@@ -549,12 +672,24 @@ async def _open(say: StatusFn) -> Device:
     link = _kinds_to_link({d.connection_type for d in muxed
                            if getattr(d, "serial", None) == serial}) or "USB"
 
-    lockdown = await _bounded(create_using_usbmux(serial), 15,
-                             "The iPhone didn’t respond. Re-plug it, unlock it, and trust this Mac.")
+    try:
+        lockdown = await _bounded(create_using_usbmux(serial, autopair=False), 15,
+                                  "Your iPhone didn’t answer. Unplug it, plug it back in, "
+                                  "and unlock it.")
+    except PasswordRequiredError:
+        raise PhoneLocked(LOCKED_MSG) from None
+    if not lockdown.paired:
+        try:
+            await lockdown.close()
+        except Exception:
+            pass
+        raise NeedsTrust(TRUST_MSG)
+    fresh_mount = False
     try:
         name = lockdown.all_values.get("DeviceName", "iPhone")
         ios = lockdown.product_version
         udid = lockdown.udid or serial
+        model = lockdown.display_name or lockdown.all_values.get("ProductType") or "iPhone"
         try:
             wireless_on = bool(await asyncio.wait_for(lockdown.get_enable_wifi_connections(), 5))
         except Exception:
@@ -572,12 +707,15 @@ async def _open(say: StatusFn) -> Device:
             # generous: on a new iOS release this downloads a fresh image, and a
             # 60s cap turned a slow connection into a hard failure
             await asyncio.wait_for(auto_mount_personalized(lockdown), MOUNT_TIMEOUT)
+            fresh_mount = True
         except asyncio.TimeoutError:
             raise SpooferError(_mount_timeout_message(ios)) from None
         except AlreadyMountedError:
             pass
         except DeveloperModeIsNotEnabledError:
             raise DeveloperModeRequired("Developer Mode is off on the iPhone.") from None
+        except PasswordRequiredError:
+            raise PhoneLocked(LOCKED_MSG) from None
     finally:
         try:
             await asyncio.wait_for(lockdown.close(), 5)
@@ -604,7 +742,8 @@ async def _open(say: StatusFn) -> Device:
 
     return Device(name=name, ios=ios, _location=location, _stack=stack,
                   _rsd=rsd, _loc_stack=loc_stack, serial=serial,
-                  link=link, wireless_on=wireless_on)
+                  link=link, wireless_on=wireless_on, udid=udid, model=model,
+                  fresh_mount=fresh_mount)
 
 
 async def _bounded(coro, seconds: float, message: str):

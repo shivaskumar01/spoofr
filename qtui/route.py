@@ -61,6 +61,7 @@ class Snapped(NamedTuple):
     ok: bool = False             # did the router actually answer?
     distance_m: float = 0.0
     duration_s: float = 0.0      # the router's own estimate for this profile
+    reason: str = ""             # when not ok: "offline" | "noroute" | "error"
 
 
 def osrm_url(profile: str, coords: str) -> str:
@@ -97,9 +98,13 @@ def snap_to_roads(points, profile: str = DEFAULT_PROFILE, timeout: float = 12.0)
                 return Snapped(snapped, True,
                                float(route.get("distance") or 0.0),
                                float(route.get("duration") or 0.0))
+        if data.get("code") in ("NoRoute", "NoSegment"):
+            return Snapped(pts, reason="noroute")     # an island, a closed area…
+    except (requests.ConnectionError, requests.Timeout):
+        return Snapped(pts, reason="offline")
     except Exception:
         pass
-    return Snapped(pts)
+    return Snapped(pts, reason="error")
 
 
 def parse_gpx(path: str):

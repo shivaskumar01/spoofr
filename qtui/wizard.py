@@ -19,10 +19,15 @@ from PySide6.QtWidgets import (
 from . import theme  # `core` is imported lazily in the worker threads (heavy: pmd3)
 
 STEPS = (
-    "1.   On your iPhone:  Settings  ▸  Privacy & Security",
-    "2.   Scroll to  Developer Mode  and turn it On",
-    "3.   Tap  Restart  when prompted",
-    "4.   After reboot, unlock and tap  Turn On  (enter passcode)",
+    ("On your iPhone, open Settings ▸ Privacy & Security.",
+     "Developer Mode lives there. Spoofr has just made it appear, if it was hidden."),
+    ("Scroll down to Developer Mode and turn it on.",
+     "Apple only lets a Mac set the location on phones with it on. It’s free and you "
+     "can turn it off any time."),
+    ("Tap Restart when the phone asks.",
+     "The switch only takes effect after a restart."),
+    ("When it’s back, unlock it and tap Turn On, then enter your passcode.",
+     "That confirms it was really you. Spoofr carries on by itself right after."),
 )
 
 
@@ -32,7 +37,7 @@ class DevModeWizard(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Enable Developer Mode")
-        self.setFixedSize(560, 470)
+        self.setFixedSize(580, 560)
         self.setModal(True)
         self._polling = True
 
@@ -48,7 +53,7 @@ class DevModeWizard(QDialog):
         blurb = QLabel("Apple requires Developer Mode to set your iPhone’s location. "
                        "It’s free, reversible anytime, and takes about 30 seconds.")
         blurb.setWordWrap(True)
-        blurb.setStyleSheet(f"color: {theme.MUTED};")
+        blurb.setProperty("role", "muted")
         lay.addWidget(blurb)
         lay.addSpacing(16)
 
@@ -57,17 +62,23 @@ class DevModeWizard(QDialog):
         bl = QVBoxLayout(box)
         bl.setContentsMargins(18, 12, 18, 12)
         bl.setSpacing(10)
-        for s in STEPS:
-            row = QLabel(s)
+        for i, (step, why) in enumerate(STEPS, 1):
+            row = QLabel(f"{i}.  {step}")
             row.setWordWrap(True)
-            row.setFont(theme.ui_font(14))
+            row.setFont(theme.ui_font(14, weight=600))
             bl.addWidget(row)
+            sub = QLabel(why)
+            sub.setWordWrap(True)
+            sub.setFont(theme.ui_font(12))
+            sub.setProperty("role", "muted")
+            sub.setContentsMargins(20, 0, 0, 4)
+            bl.addWidget(sub)
         lay.addWidget(box)
         lay.addSpacing(16)
 
-        self._status = QLabel("●  Waiting for Developer Mode…")
+        self._status = QLabel("●  Waiting for Developer Mode… this updates by itself.")
         self._status.setFont(theme.ui_font(13, weight=600))
-        self._status.setStyleSheet(f"color: {theme.AMBER};")
+        self._status.setProperty("role", "warn")
         self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._status)
         lay.addStretch(1)
@@ -105,8 +116,9 @@ class DevModeWizard(QDialog):
 
     def _on_ready(self):
         self._polling = False
-        self._status.setText("✓  Developer Mode on, connecting…")
-        self._status.setStyleSheet(f"color: {theme.GREEN};")
+        self._status.setText("✓  Developer Mode is on. Connecting…")
+        self._status.setProperty("role", "good")
+        self._status.style().unpolish(self._status); self._status.style().polish(self._status)
         QTimer.singleShot(900, self.accept)
 
     def reject(self):

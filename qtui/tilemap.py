@@ -6,30 +6,27 @@ It is a QGraphicsView (raster viewport) over a Web-Mercator tile pyramid:
     and a QNetworkDiskCache, so revisits are instant and there is no white flash;
   * the scene lives in "world pixels" at one integer zoom level; fractional zoom is
     a view scale, so pinch is smooth and tiles only re-grid when the level flips;
-  * a light street map is recoloured on arrival into the app's navy ramp, so the
-    map and the chrome around it read as one calm surface;
-  * markers keep a constant on-screen size (ItemIgnoresTransformations); routes are
-    cosmetic-pen paths that stay a constant width at any zoom;
-  * macOS trackpad pinch/scroll arrive as real Qt gesture/wheel events, no pyobjc.
-
-Public surface mirrors what the app needs: set_center/center, set_zoom/zoom,
-zoom_at, add_marker/move_marker/remove_overlay, add_path/update_path, plus `clicked(lat, lon)`
-and `viewChanged` signals.
+  * three styles: Standard (a street map, recoloured into the app's navy ramp in
+    dark mode), Satellite, and Hybrid (imagery with road and label layers on top);
+  * markers keep a constant on-screen size (ItemIgnoresTransformations) and can be
+    draggable; routes are cosmetic-pen paths with direction arrows;
+  * the floating panels' soft shadows are painted here, under them, from cached
+    pixmaps: a per-widget blur effect would re-blur every panel on every pan frame;
+  * macOS trackpad pinch/scroll arrive as real Qt gesture/wheel events.
 """
 
 from __future__ import annotations
 
-import hashlib
 import math
 from pathlib import Path
 from typing import NamedTuple
 
 from PySide6.QtCore import (
-    QEasingCurve, QPointF, QRect, QRectF, Qt, Signal, QStandardPaths, QTimer,
+    QEasingCurve, QEvent, QPointF, QRect, QRectF, Qt, Signal, QStandardPaths, QTimer,
     QUrl, QVariantAnimation,
 )
 from PySide6.QtGui import (
-    QColor, QImage, QPainter, QPainterPath, QPen, QPixmap,
+    QColor, QImage, QPainter, QPainterPath, QPen, QPixmap, QPolygonF,
 )
 from PySide6.QtNetwork import (
     QNetworkAccessManager, QNetworkDiskCache, QNetworkRequest, QNetworkReply,
@@ -43,6 +40,7 @@ from . import theme
 TILE = 256
 MAX_TILE_ATTEMPTS = 3     # give up re-requesting a tile that keeps erroring
 SUBDOMAINS = ("a", "b", "c")
+_ESRI = "https://services.arcgisonline.com/ArcGIS/rest/services/"
 
 
 class TileSource(NamedTuple):
@@ -50,26 +48,34 @@ class TileSource(NamedTuple):
 
     `url` is a slippy template; {s} picks a subdomain and {r} becomes "@2x" when
     `retina` is set and the display warrants it. Note the segment order is the
-    source's own — Esri serves {z}/{y}/{x}.
+    source's own — Esri serves {z}/{y}/{x}. `overlays` are drawn on top (labels,
+    roads) and never recoloured.
     """
     url: str
     attribution: str
-    recolor: bool = False     # desaturate + invert a light basemap into a dark one
+    recolor: bool = False     # recolour a light basemap into the app's dark ramp
     retina: bool = False      # does this source serve @2x tiles?
+    overlays: tuple = ()
 
 
-# Esri's street map, recoloured to dark on arrival. CARTO's dark_all was the
-# obvious choice and looked better, but it now stamps "API KEY REQUIRED" across
-# every tile while still answering 200, so nothing in the fetch path can even
-# tell it failed. Esri needs no key, carries street labels at every zoom, and a
-# desaturate + invert turns it into the dark canvas the rest of the UI expects.
+# Esri's street map. CARTO's dark_all was the obvious dark choice, but it now
+# stamps "API KEY REQUIRED" across every tile while still answering 200, so
+# nothing in the fetch path can even tell it failed. Esri needs no key and
+# carries street labels at every zoom; in dark mode it is recoloured on arrival.
 ESRI_DARK = TileSource(
-    url=("https://services.arcgisonline.com/ArcGIS/rest/services/"
-         "World_Street_Map/MapServer/tile/{z}/{y}/{x}"),
+    url=_ESRI + "World_Street_Map/MapServer/tile/{z}/{y}/{x}",
     attribution="Esri",
     recolor=True,
 )
-
+SATELLITE = TileSource(
+    url=_ESRI + "World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attribution="Esri, Maxar, Earthstar Geographics",
+)
+HYBRID = SATELLITE._replace(overlays=(
+    _ESRI + "Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
+    _ESRI + "Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+))
+STYLES = {"standard": ESRI_DARK, "satellite": SATELLITE, "hybrid": HYBRID}
 DEFAULT_SOURCE = ESRI_DARK
 
 # Light-map luminance -> navy. Index = the grey level of the original tile; the
@@ -80,9 +86,10 @@ DEFAULT_SOURCE = ESRI_DARK
 RAMP_GAMMA = 1.45
 
 
-def _ramp_table(dark: str = theme.MAP_BG, light: str = theme.MAP_INK,
+def _ramp_table(dark: str | None = None, light: str | None = None,
                 gamma: float = RAMP_GAMMA) -> list[int]:
-    lo, hi = QColor(dark), QColor(light)
+    lo = QColor(dark or theme.DARK["MAP_BG"])
+    hi = QColor(light or theme.DARK["MAP_INK"])
     table = []
     for v in range(256):
         f = (1.0 - v / 255.0) ** gamma
@@ -110,16 +117,31 @@ def recolor(img: QImage) -> QImage:
     return idx.convertToFormat(QImage.Format.Format_RGB32)
 
 
+def soften(img: QImage) -> QImage:
+    """Calm a light street map for light mode: most of the colour out, a little
+    lighter. Two composited draws in C++, no per-pixel Python."""
+    out = img.convertToFormat(QImage.Format.Format_RGB32)
+    gray = img.convertToFormat(QImage.Format.Format_Grayscale8).convertToFormat(
+        QImage.Format.Format_RGB32)
+    p = QPainter(out)
+    p.setOpacity(0.62)
+    p.drawImage(0, 0, gray)
+    p.setOpacity(0.18)
+    p.fillRect(out.rect(), QColor(255, 255, 255))
+    p.end()
+    return out
+
+
 def _clamp(v, lo, hi):
     return lo if v < lo else hi if v > hi else v
 
 
 class _PointOverlay:
     """A constant-screen-size item pinned to a geographic coordinate."""
-    __slots__ = ("item", "lat", "lon")
+    __slots__ = ("item", "lat", "lon", "draggable")
 
-    def __init__(self, item, lat, lon):
-        self.item, self.lat, self.lon = item, lat, lon
+    def __init__(self, item, lat, lon, draggable=False):
+        self.item, self.lat, self.lon, self.draggable = item, lat, lon, draggable
 
 
 class _PathOverlay:
@@ -129,14 +151,91 @@ class _PathOverlay:
         self.item, self.pts = item, list(pts)
 
 
+class RouteLine(QGraphicsPathItem):
+    """A route: a cosmetic line with small chevrons pointing the way.
+
+    Arrow anchors are laid out once per integer zoom level (in scene pixels), so
+    painting a long route costs a transform per visible arrow, not per vertex.
+    """
+
+    SPACING = 120.0             # scene pixels between arrows (≈ screen pixels)
+
+    def __init__(self):
+        super().__init__()
+        self._anchors: list[tuple[float, float, float]] = []
+
+    def set_anchors(self, path: QPainterPath):
+        out, carry = [], self.SPACING / 2
+        n = path.elementCount()
+        for i in range(1, n):
+            a, b = path.elementAt(i - 1), path.elementAt(i)
+            dx, dy = b.x - a.x, b.y - a.y
+            seg = math.hypot(dx, dy)
+            if seg <= 0:
+                continue
+            ang = math.degrees(math.atan2(dy, dx))
+            d = carry
+            while d < seg:
+                out.append((a.x + dx * d / seg, a.y + dy * d / seg, ang))
+                d += self.SPACING
+            carry = d - seg
+        self._anchors = out
+
+    def paint(self, p: QPainter, opt, widget=None):
+        super().paint(p, opt, widget)
+        if not self._anchors:
+            return
+        t = p.worldTransform()
+        exposed = opt.exposedRect.adjusted(-20, -20, 20, 20) if opt is not None else None
+        p.save()
+        p.resetTransform()
+        pen = QPen(QColor(255, 255, 255, 235), 1.8)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for x, y, ang in self._anchors:
+            if exposed is not None and not exposed.contains(QPointF(x, y)):
+                continue
+            c = t.map(QPointF(x, y))
+            r = math.radians(ang)
+            ux, uy = math.cos(r), math.sin(r)
+            tip = QPointF(c.x() + ux * 2.4, c.y() + uy * 2.4)
+            back = QPointF(c.x() - ux * 2.4, c.y() - uy * 2.4)
+            p.drawPolyline(QPolygonF([
+                QPointF(back.x() - uy * 2.9, back.y() + ux * 2.9), tip,
+                QPointF(back.x() + uy * 2.9, back.y() - ux * 2.9)]))
+        p.restore()
+
+
+def _shadow_pixmap(w: int, h: int, radius: float, spread: int, alpha: int) -> QPixmap:
+    """A soft, blurred-looking rounded-rect shadow, drawn as stacked rings."""
+    pm = QPixmap(w + 2 * spread, h + 2 * spread)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    for i in range(spread, 0, -1):
+        a = alpha * (1.0 - i / (spread + 1)) ** 2 / spread * 2.2
+        p.setPen(QPen(QColor(0, 0, 0, max(1, min(255, int(a)))), 1.0))
+        r = QRectF(spread - i, spread - i, w + 2 * i, h + 2 * i)
+        p.drawRoundedRect(r, radius + i, radius + i)
+    p.end()
+    return pm
+
+
 class TileMap(QGraphicsView):
     clicked = Signal(float, float)       # left-click (not a drag) at (lat, lon)
-    viewChanged = Signal()               # center/zoom changed (after the view settled)
+    viewChanged = Signal()               # center/zoom changed
+    userPanned = Signal()                # the user moved the map (drag, scroll, pinch)
+    markerMoved = Signal(object, float, float)     # a draggable marker, live
+    markerDropped = Signal(object, float, float)   # ... and where it was let go
 
     def __init__(self, parent=None, source: TileSource = DEFAULT_SOURCE,
                  min_zoom: int = 2, max_zoom: int = 20):
         super().__init__(parent)
         self._source = source
+        self._dark = theme.is_dark()
         self.min_zoom, self.max_zoom = min_zoom, max_zoom
         self._zoom = 11.0                # fractional zoom
         self._z = 11                     # integer tile level the scene is built at
@@ -144,14 +243,12 @@ class TileMap(QGraphicsView):
         self._retina = self.devicePixelRatioF() >= 1.5
 
         # --- scene + raster viewport ---
-        # (The QOpenGLWidget viewport fails to composite QGraphicsScene items on
-        # macOS/Qt6; the default raster engine is CoreGraphics-backed and smooth
-        # for a pixmap tile grid, and it actually renders.)
+        # (A QOpenGLWidget viewport fails to composite QGraphicsScene items on
+        # macOS/Qt6; the default raster engine is smooth for a pixmap grid.)
         self._scene = QGraphicsScene(self)
         self._scene.setBackgroundBrush(QColor(theme.MAP_BG))
         self.setScene(self._scene)
-        # Smart updates: the animated live marker repaints only its own small
-        # rect each frame instead of the whole tile grid (the Tk pulse's sin).
+        # Smart updates: the animated live marker repaints only its own rect
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.SmartViewportUpdate)
         self.setOptimizationFlag(QGraphicsView.OptimizationFlag.DontAdjustForAntialiasing, True)
         self.setRenderHints(QPainter.RenderHint.SmoothPixmapTransform | QPainter.RenderHint.Antialiasing)
@@ -165,40 +262,43 @@ class TileMap(QGraphicsView):
         self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self.grabGesture(Qt.GestureType.PinchGesture)
         # never take keyboard focus: arrow keys must reach the window's walk
-        # handler, not QGraphicsView's built-in scrolling (which would shift the
-        # view without updating our center/tile bookkeeping)
+        # handler, not QGraphicsView's built-in scrolling
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAccessibleName("Map")
 
-        # --- async tile loading w/ disk cache ---
+        # --- async tile loading w/ disk cache (keyed by URL, so styles never mix) ---
         self._nam = QNetworkAccessManager(self)
         cache = QNetworkDiskCache(self)
-        # keyed to the source: switching basemaps must not keep serving tiles
-        # cached from the old one (which is how watermarked tiles would survive)
-        tag = hashlib.sha1(source.url.encode()).hexdigest()[:10]
         cache_dir = Path(QStandardPaths.writableLocation(
-            QStandardPaths.StandardLocation.CacheLocation)) / "tiles" / tag
+            QStandardPaths.StandardLocation.CacheLocation)) / "tiles" / "v2"
         cache.setCacheDirectory(str(cache_dir))
-        cache.setMaximumCacheSize(256 * 1024 * 1024)   # 256 MB on disk
+        cache.setMaximumCacheSize(512 * 1024 * 1024)
         self._nam.setCache(cache)
         self._nam.setTransferTimeout(10_000)   # a stalled fetch errors out → retried
         self._nam.finished.connect(self._on_tile)
-        self._tiles: dict[tuple[int, int, int], QGraphicsPixmapItem] = {}
-        self._inflight: dict[tuple[int, int, int], QNetworkReply] = {}
+        # keys are (z, x, y) for the base layer and (layer, z, x, y) for overlays
+        self._tiles: dict[tuple, QGraphicsPixmapItem] = {}
+        self._inflight: dict[tuple, QNetworkReply] = {}
         # tile -> failed attempts. A layout pass runs on every pan/zoom frame, so
         # retrying unconditionally meant a tile the server won't serve was
         # re-requested forever; cap it and keep the rescaled placeholder instead.
-        self._failed: dict[tuple[int, int, int], int] = {}
+        self._failed: dict[tuple, int] = {}
 
         self._points: list[_PointOverlay] = []
         self._paths: list[_PathOverlay] = []
         self._press_pos = None
         self._dragged = False
+        self._drag_ov: _PointOverlay | None = None
+        self._drag_off = QPointF()
         self._tint: QColor | None = None   # brightness overlay
         self._based_z: int | None = None   # integer level the scene is projected at
+        self._shadowed: list = []          # floating widgets to cast shadows for
+        self._shadow_cache: dict = {}
 
         # eased zoom for buttons / double-click / mouse wheel (pinch stays live)
         self._zoom_anim: QVariantAnimation | None = None
         self._zoom_target: float = self._zoom
+        self._pan_anim: QVariantAnimation | None = None
 
         # single-click is emitted after a beat so a double-click (zoom) can
         # cancel it, otherwise zooming would also drop a pin / waypoint
@@ -244,46 +344,166 @@ class TileMap(QGraphicsView):
         self._clat, self._clon = lat, lon
         self._apply_view()
 
-    def pan_to(self, lat: float, lon: float):
-        """Lightweight recenter (no transform rebuild), for follow-during-walk."""
+    def pan_to(self, lat: float, lon: float, animate_ms: int = 0):
+        """Recenter (no transform rebuild). Animated pans glide instead of jumping."""
+        if self._pan_anim is not None:
+            self._pan_anim.stop()
+            self._pan_anim = None
+        if animate_ms <= 0:
+            self._center_on(lat, lon)
+            return
+        a = QVariantAnimation(self)
+        a.setDuration(animate_ms)
+        a.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        a.setStartValue(QPointF(self._clon, self._clat))
+        a.setEndValue(QPointF(lon, lat))
+        a.valueChanged.connect(lambda v: self._center_on(v.y(), v.x()))
+        a.start()
+        self._pan_anim = a
+
+    def _center_on(self, lat: float, lon: float):
         self._clat, self._clon = lat, lon
         self.centerOn(self._scene_pt(lat, lon))
         self._layout_tiles()
         self.viewChanged.emit()
+
+    def lat_lon_at(self, view_pos) -> tuple[float, float]:
+        return self._scene_to_ll(self.mapToScene(view_pos))
+
+    def view_pos(self, lat: float, lon: float):
+        return self.mapFromScene(self._scene_pt(lat, lon))
 
     def set_brightness(self, name: str):
         self._tint = {"Dim": QColor(0, 0, 0, 54),
                       "Bright": QColor(255, 255, 255, 18)}.get(name)
         self.viewport().update()
 
+    # -- style + appearance --
+
+    @property
+    def style_name(self) -> str:
+        return next((k for k, v in STYLES.items() if v == self._source), "standard")
+
+    def set_style(self, name: str):
+        src = STYLES.get(name, ESRI_DARK)
+        if src == self._source:
+            return
+        self._source = src
+        self._reload_tiles()
+
+    def set_dark(self, dark: bool):
+        """Follow the app appearance: the standard map is recoloured in dark mode."""
+        self._scene.setBackgroundBrush(QColor(theme.MAP_BG))
+        if dark == self._dark:
+            self.viewport().update()
+            return
+        self._dark = dark
+        self._shadow_cache.clear()
+        self._reload_tiles()
+
+    def _reload_tiles(self):
+        for key in list(self._tiles):
+            self._scene.removeItem(self._tiles.pop(key))
+        for reply in list(self._inflight.values()):
+            reply.abort()
+        self._inflight.clear()
+        self._failed.clear()
+        self._layout_tiles()            # the disk cache makes this near-instant
+
+    # -- shadows for the floating chrome --
+
+    def cast_shadow(self, widget):
+        """Paint a soft shadow under this floating child whenever it is visible."""
+        if widget not in self._shadowed:
+            self._shadowed.append(widget)
+            widget.installEventFilter(self)
+
+    def eventFilter(self, obj, e):
+        if obj in self._shadowed and e.type() in (
+                QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.Hide):
+            self.viewport().update()
+        return super().eventFilter(obj, e)
+
     def drawForeground(self, painter: QPainter, rect: QRectF):
         if self._tint is not None:
             painter.fillRect(rect, self._tint)
+        if not self._shadowed:
+            return
+        painter.save()
+        painter.resetTransform()
+        for w in self._shadowed:
+            if not w.isVisible():
+                continue
+            g = w.geometry()
+            radius = 14 if w.objectName() != "Toast" else 12
+            spread = 14
+            key = (g.width(), g.height(), radius, theme.SHADOW_ALPHA)
+            pm = self._shadow_cache.get(key)
+            if pm is None:
+                if len(self._shadow_cache) > 64:
+                    self._shadow_cache.clear()
+                pm = _shadow_pixmap(g.width(), g.height(), radius, spread, theme.SHADOW_ALPHA)
+                self._shadow_cache[key] = pm
+            painter.drawPixmap(g.x() - spread, g.y() - spread + 3, pm)
+        painter.restore()
 
     def set_zoom(self, z: float, anchor=None):
         self._set_zoom(z, anchor)
 
     def set_view(self, lat: float, lon: float, z: float):
         self._stop_zoom_anim()
+        if self._pan_anim is not None:
+            self._pan_anim.stop()
+            self._pan_anim = None
         self._clat, self._clon = lat, lon
         self._zoom = _clamp(float(z), self.min_zoom, self.max_zoom)
         self._z = int(round(self._zoom))
         self._apply_view()
 
+    def fit(self, pts, pad: int = 80, max_zoom: float = 17):
+        """Show all of `pts` with some room around them."""
+        if not pts:
+            return
+        lats = [p[0] for p in pts]
+        lons = [p[1] for p in pts]
+        lat, lon = (min(lats) + max(lats)) / 2, (min(lons) + max(lons)) / 2
+        if len(pts) == 1:
+            self.set_view(lat, lon, min(max_zoom, max(self._zoom, 15)))
+            return
+        W, H = max(100, self.width() - 2 * pad), max(100, self.height() - 2 * pad)
+        z = max_zoom
+        while z > self.min_zoom:
+            n = TILE * 2 ** z
+            x0 = (min(lons) + 180) / 360 * n
+            x1 = (max(lons) + 180) / 360 * n
+            def y(la):
+                s = math.sin(math.radians(_clamp(la, -85.05, 85.05)))
+                return (0.5 - math.log((1 + s) / (1 - s)) / (4 * math.pi)) * n
+            if x1 - x0 <= W and y(min(lats)) - y(max(lats)) <= H:
+                break
+            z -= 0.25
+        self.set_view(lat, lon, z)
+
     def zoom_at(self, step: float, view_pos=None):
         self._animate_zoom_by(step, view_pos)
 
     # markers: pixmap pinned to a coordinate, constant screen size
-    def add_marker(self, lat: float, lon: float, pixmap: QPixmap, anchor: str = "s", z: int = 10):
+    def add_marker(self, lat: float, lon: float, pixmap: QPixmap, anchor: str = "s",
+                   z: int = 10, draggable: bool = False, offset=None):
         item = QGraphicsPixmapItem(pixmap)
         item.setFlag(QGraphicsPixmapItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
         item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         item.setZValue(z)
         dpr = pixmap.devicePixelRatio() or 1.0
         w, h = pixmap.width() / dpr, pixmap.height() / dpr
-        item.setOffset(-w / 2, -h if anchor == "s" else -h / 2)
+        if offset is not None:
+            item.setOffset(-offset[0], -offset[1])
+        else:
+            item.setOffset(-w / 2, -h if anchor == "s" else -h / 2)
+        if draggable:
+            item.setCursor(Qt.CursorShape.OpenHandCursor)
         self._scene.addItem(item)
-        ov = _PointOverlay(item, lat, lon)
+        ov = _PointOverlay(item, lat, lon, draggable)
         self._points.append(ov)
         item.setPos(self._scene_pt(lat, lon))
         return ov
@@ -301,6 +521,9 @@ class TileMap(QGraphicsView):
         ov.lat, ov.lon = lat, lon
         ov.item.setPos(self._scene_pt(lat, lon))
 
+    def set_marker_pixmap(self, ov: _PointOverlay, pixmap: QPixmap):
+        ov.item.setPixmap(pixmap)
+
     def update_path(self, ov: "_PathOverlay", pts):
         """Repoint an existing polyline (used to grow the travelled track)."""
         ov.pts = list(pts)
@@ -316,23 +539,19 @@ class TileMap(QGraphicsView):
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         if dashed:
-            pen.setDashPattern([0.1, 2.2])    # round dots: a straight-line preview
+            pen.setDashPattern([0.1, 2.2])    # round dots
         return pen
 
     def is_near_edge(self, lat: float, lon: float, margin: float = 0.22) -> bool:
-        """True when this coordinate has drifted out of the comfortable middle.
-
-        Following a moving marker by recentring on every fix pins it to the
-        centre of the screen, which makes a walk at 1.4 m/s look completely
-        stationary — the map slides and the marker never does. Recentring only
-        when it nears an edge lets it visibly travel across the view.
-        """
+        """True when this coordinate has drifted out of the comfortable middle."""
         p = self.mapFromScene(self._scene_pt(lat, lon))
         r = self.viewport().rect()
         mx, my = r.width() * margin, r.height() * margin
         return not (mx <= p.x() <= r.width() - mx and my <= p.y() <= r.height() - my)
 
     def remove_overlay(self, ov):
+        if ov is None:
+            return
         try:
             self._scene.removeItem(ov.item)
         except Exception:
@@ -342,10 +561,10 @@ class TileMap(QGraphicsView):
         if ov in self._paths:
             self._paths.remove(ov)
 
-    def add_path(self, pts, color: str = theme.BLUE, width: int = 5, z: int = 5,
-                 dashed: bool = False):
-        item = QGraphicsPathItem()
-        item.setPen(self._path_pen(color, width, dashed))
+    def add_path(self, pts, color: str | None = None, width: int = 5, z: int = 5,
+                 dashed: bool = False, arrows: bool = False):
+        item = RouteLine() if arrows else QGraphicsPathItem()
+        item.setPen(self._path_pen(color or theme.ACCENT, width, dashed))
         item.setZValue(z)
         self._scene.addItem(item)
         ov = _PathOverlay(item, pts)
@@ -369,8 +588,6 @@ class TileMap(QGraphicsView):
             self._clon += before[1] - after[1]
             self._apply_view()
 
-    # ---- eased zoom (buttons / double-click / wheel) ----
-
     def _stop_zoom_anim(self):
         if self._zoom_anim is not None:
             self._zoom_anim.stop()
@@ -390,7 +607,7 @@ class TileMap(QGraphicsView):
         a = QVariantAnimation(self)
         a.setStartValue(float(self._zoom))
         a.setEndValue(target)
-        a.setDuration(170)
+        a.setDuration(180)
         a.setEasingCurve(QEasingCurve.Type.OutCubic)
         a.valueChanged.connect(lambda v: self._set_zoom(float(v), view_pos))
         a.finished.connect(self._zoom_anim_done)
@@ -398,16 +615,14 @@ class TileMap(QGraphicsView):
         self._zoom_anim = a
 
     def _zoom_anim_done(self):
-        # only natural completion lands here (stop() doesn't emit finished), so a
-        # later pinch/wheel re-bases on the real current zoom, not a stale target
+        # only natural completion lands here (stop() doesn't emit finished)
         if self._zoom_anim is not None and self.sender() is self._zoom_anim:
             self._zoom_anim = None
 
     def _apply_view(self):
-        """Set the GPU scale + recenter, then lay out tiles. The scene is only
+        """Set the scale + recenter, then lay out tiles. The scene is only
         re-based (rect + overlay reprojection, O(overlay points)) when the
-        integer level actually flips, so pinch frames stay cheap even with a
-        dense GPX route on the map."""
+        integer level actually flips, so pinch frames stay cheap."""
         if self._z != self._based_z:
             w = self._world()
             self._scene.setSceneRect(0, 0, w, w)
@@ -431,9 +646,18 @@ class TileMap(QGraphicsView):
             p = self._scene_pt(la, lo)
             path.moveTo(p) if i == 0 else path.lineTo(p)
         ov.item.setPath(path)
+        if isinstance(ov.item, RouteLine):
+            ov.item.set_anchors(path)
 
     def _visible_scene_rect(self) -> QRectF:
         return self.mapToScene(self.viewport().rect()).boundingRect()
+
+    def _layers(self) -> list[str]:
+        return [self._source.url, *self._source.overlays]
+
+    @staticmethod
+    def _key(layer: int, z: int, x: int, y: int) -> tuple:
+        return (z, x, y) if layer == 0 else (layer, z, x, y)
 
     def _layout_tiles(self):
         z, n = self._z, 2 ** self._z
@@ -445,17 +669,20 @@ class TileMap(QGraphicsView):
         y1 = min(n - 1, int((vis.bottom() + margin) // TILE))
         needed = set()
         fresh = []
+        layers = range(len(self._layers()))
         for tx in range(x0, x1 + 1):
             for ty in range(y0, y1 + 1):
-                key = (z, tx, ty)
-                needed.add(key)
-                if key not in self._tiles:
-                    self._make_tile(key)
-                    fresh.append(key)
-                elif 0 < self._failed.get(key, 0) < MAX_TILE_ATTEMPTS:
-                    self._request(key)             # earlier fetch errored, try again
+                for layer in layers:
+                    key = self._key(layer, z, tx, ty)
+                    needed.add(key)
+                    if key not in self._tiles:
+                        self._make_tile(key, layer)
+                        if layer == 0:
+                            fresh.append(key)
+                    elif 0 < self._failed.get(key, 0) < MAX_TILE_ATTEMPTS:
+                        self._request(key)             # earlier fetch errored, try again
         # seed brand-new tiles with imagery rescaled from the level we're leaving,
-        # BEFORE that level is pruned, zooming never blanks to the background
+        # BEFORE that level is pruned: zooming never blanks to the background
         for key in fresh:
             ph = self._placeholder(key)
             if ph is not None:
@@ -470,11 +697,10 @@ class TileMap(QGraphicsView):
                     reply.abort()   # stop wasting the connection pool on it
 
     def _placeholder(self, key) -> QPixmap | None:
-        """A stand-in for a not-yet-loaded tile, rescaled from tiles we already
-        have at a nearby level: crop of an ancestor (zooming in) or a composite
-        of the four children (zooming out)."""
+        """A stand-in for a not-yet-loaded base tile, rescaled from tiles we have
+        at a nearby level: crop of an ancestor (zooming in) or a composite of the
+        four children (zooming out)."""
         z, x, y = key
-        # crop from an ancestor
         for d in (1, 2, 3):
             src = self._tiles.get((z - d, x >> d, y >> d))
             if src is None or src.pixmap().isNull():
@@ -490,7 +716,6 @@ class TileMap(QGraphicsView):
                              Qt.TransformationMode.SmoothTransformation)
             out.setDevicePixelRatio(pm.devicePixelRatio())
             return out
-        # compose from children
         kids = [self._tiles.get((z + 1, 2 * x + dx, 2 * y + dy))
                 for dy in (0, 1) for dx in (0, 1)]
         pms = [k.pixmap() if k is not None and not k.pixmap().isNull() else None
@@ -510,11 +735,11 @@ class TileMap(QGraphicsView):
         out.setDevicePixelRatio(ref.devicePixelRatio())
         return out
 
-    def _make_tile(self, key):
-        z, x, y = key
+    def _make_tile(self, key, layer: int = 0):
+        z, x, y = key[-3:]
         item = QGraphicsPixmapItem()
         item.setPos(x * TILE, y * TILE)
-        item.setZValue(-10)
+        item.setZValue(-10 + layer)
         item.setTransformationMode(Qt.TransformationMode.SmoothTransformation)
         self._scene.addItem(item)
         self._tiles[key] = item
@@ -523,23 +748,28 @@ class TileMap(QGraphicsView):
     def _request(self, key):
         if key in self._inflight:
             return
-        z, x, y = key
+        layer = key[0] if len(key) == 4 else 0
+        z, x, y = key[-3:]
+        layers = self._layers()
+        if layer >= len(layers):
+            return
         sub = SUBDOMAINS[(x + y) % len(SUBDOMAINS)]
         r = "@2x" if (self._source.retina and self._retina) else ""
-        url = (self._source.url.replace("{s}", sub).replace("{z}", str(z))
+        url = (layers[layer].replace("{s}", sub).replace("{z}", str(z))
                .replace("{x}", str(x)).replace("{y}", str(y)).replace("{r}", r))
         req = QNetworkRequest(QUrl(url))
         req.setAttribute(QNetworkRequest.Attribute.CacheLoadControlAttribute,
                          QNetworkRequest.CacheLoadControl.PreferCache)
         req.setAttribute(QNetworkRequest.Attribute.HttpPipeliningAllowedAttribute, True)
-        req.setRawHeader(b"User-Agent", b"Spoofr/1.0 (macOS location utility)")
-        req.setAttribute(QNetworkRequest.Attribute.User, key)
+        req.setRawHeader(b"User-Agent", b"Spoofr/1.1 (macOS location utility)")
+        req.setAttribute(QNetworkRequest.Attribute.User, list(key))
         self._inflight[key] = self._nam.get(req)
 
     def _on_tile(self, reply: QNetworkReply):
         key = reply.request().attribute(QNetworkRequest.Attribute.User)
         key = tuple(key) if key else key
-        self._inflight.pop(key, None)
+        if self._inflight.get(key) is reply:
+            self._inflight.pop(key, None)
         try:
             err = reply.error()
             if err == QNetworkReply.NetworkError.NoError:
@@ -548,7 +778,8 @@ class TileMap(QGraphicsView):
                 if not pix.isNull():
                     item = self._tiles.get(key)
                     if item is not None:
-                        item.setPixmap(self._prepare(pix))
+                        layer = key[0] if len(key) == 4 else 0
+                        item.setPixmap(self._prepare(pix, layer))
                         self._failed.pop(key, None)
             elif err != QNetworkReply.NetworkError.OperationCanceledError:
                 # failed (offline blip / HTTP error / timeout): count it so the
@@ -558,7 +789,7 @@ class TileMap(QGraphicsView):
         finally:
             reply.deleteLater()
 
-    def _prepare(self, pix: QPixmap) -> QPixmap:
+    def _prepare(self, pix: QPixmap, layer: int = 0) -> QPixmap:
         """Scale-correct the tile, and recolour it if the source needs it.
 
         The device pixel ratio comes from the tile we actually received rather
@@ -566,8 +797,9 @@ class TileMap(QGraphicsView):
         would otherwise be drawn at half size on a retina Mac and tear the grid.
         """
         dpr = max(1.0, pix.width() / TILE)
-        if self._source.recolor:
-            pix = QPixmap.fromImage(recolor(pix.toImage()))
+        if layer == 0 and self._source.recolor:
+            img = pix.toImage()
+            pix = QPixmap.fromImage(recolor(img) if self._dark else soften(img))
         pix.setDevicePixelRatio(dpr)
         return pix
 
@@ -578,6 +810,7 @@ class TileMap(QGraphicsView):
         if not d.isNull():
             # trackpad two-finger scroll: pan (with the OS's own momentum)
             self._pan_pixels(d.x(), d.y())
+            self.userPanned.emit()
         else:
             # an external mouse wheel: zoom at the cursor, like every map app
             notches = e.angleDelta().y() / 120.0
@@ -586,6 +819,9 @@ class TileMap(QGraphicsView):
         e.accept()
 
     def _pan_pixels(self, dx: float, dy: float):
+        if self._pan_anim is not None:
+            self._pan_anim.stop()
+            self._pan_anim = None
         sp = self._scene_pt(self._clat, self._clon)
         sp.setX(sp.x() - dx / self._scale)
         sp.setY(sp.y() - dy / self._scale)
@@ -607,27 +843,55 @@ class TileMap(QGraphicsView):
                 return True
         return super().event(e)
 
+    def _draggable_at(self, pos) -> _PointOverlay | None:
+        for item in self.items(pos):
+            for ov in self._points:
+                if ov.draggable and ov.item is item:
+                    return ov
+        return None
+
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
+            ov = self._draggable_at(e.position().toPoint())
+            if ov is not None:
+                self._drag_ov = ov
+                self._drag_off = ov.item.pos() - self.mapToScene(e.position().toPoint())
+                self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                e.accept()
+                return
             self._press_pos = e.position()
             self._dragged = False
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if self._drag_ov is not None:
+            sp = self.mapToScene(e.position().toPoint()) + self._drag_off
+            lat, lon = self._scene_to_ll(sp)
+            self.move_marker(self._drag_ov, lat, lon)
+            self.markerMoved.emit(self._drag_ov, lat, lon)
+            e.accept()
+            return
         if self._press_pos is not None and (e.buttons() & Qt.MouseButton.LeftButton):
             delta = e.position() - self._press_pos
             if self._dragged or delta.manhattanLength() > 3:
                 if not self._dragged:
-                    self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+                    self.userPanned.emit()
                 self._dragged = True
                 self._press_pos = e.position()
                 self._pan_pixels(delta.x(), delta.y())
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self._drag_ov is not None:
+            ov, self._drag_ov = self._drag_ov, None
+            self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+            self.markerDropped.emit(ov, ov.lat, ov.lon)
+            e.accept()
+            return
         if e.button() == Qt.MouseButton.LeftButton and self._press_pos is not None:
             if self._dragged:
-                self.setCursor(Qt.CursorShape.CrossCursor)
+                self.viewport().setCursor(Qt.CursorShape.CrossCursor)
             else:
                 # stash the click; it only fires if no double-click follows
                 self._click_ll = self._scene_to_ll(self.mapToScene(e.position().toPoint()))

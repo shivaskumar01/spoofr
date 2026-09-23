@@ -34,7 +34,8 @@ def main() -> None:
         sys.argv = sys.argv[:1]          # server.py reads a port from argv at import
         ok = True
         for m in ("applog", "core", "macui", "portable", "server",
-                  "qtui.app", "qtui.geo", "qtui.route", "qtui.tilemap",
+                  "qtui.app", "qtui.geo", "qtui.route", "qtui.tilemap", "qtui.session",
+                  "qtui.panel", "qtui.welcome", "qtui.mapview", "qtui.sidebar",
                   "pymobiledevice3", "pymobiledevice3.__main__",
                   "PySide6.QtWidgets", "PySide6.QtNetwork",
                   "CoreLocation", "geocoder", "requests", "gpxpy", "segno", "psutil"):

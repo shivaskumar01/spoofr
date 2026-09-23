@@ -10,12 +10,69 @@ from __future__ import annotations
 import re
 
 
-def parse_coords(s: str | None):
-    """'37.77, -122.41' -> (lat, lon), validated; else None."""
-    m = re.fullmatch(r"\s*(-?\d{1,3}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)\s*", s or "")
-    if not m:
+class Offline(RuntimeError):
+    """No internet: say so, and what still works."""
+
+
+OFFLINE_SEARCH = ("You’re offline. Address search needs the internet, but you can still "
+                  "paste coordinates like 33.4242, -111.9281.")
+
+_NUM = re.compile(r"-?\d+(?:\.\d+)?")
+_QUOTES = str.maketrans({"′": "'", "’": "'", "‘": "'", "″": '"', "”": '"', "“": '"',
+                         "º": "°", "˚": "°"})
+
+
+def _coord(part: str):
+    """One coordinate: decimal, degrees-minutes or DMS, signed or N/S/E/W."""
+    hemis = re.findall(r"[NSEW]", part.upper())
+    if len(hemis) > 1:
         return None
-    lat, lon = float(m.group(1)), float(m.group(2))
+    nums = _NUM.findall(part)
+    if not 1 <= len(nums) <= 3:
+        return None
+    d = float(nums[0])
+    neg = d < 0 or part.strip().startswith("-")
+    m = float(nums[1]) if len(nums) > 1 else 0.0
+    sec = float(nums[2]) if len(nums) > 2 else 0.0
+    if m >= 60 or sec >= 60 or m < 0 or sec < 0:
+        return None
+    v = abs(d) + m / 60.0 + sec / 3600.0
+    h = hemis[0] if hemis else None
+    if h in ("S", "W") or (h is None and neg):
+        v = -v
+    return v, h
+
+
+def parse_coords(s: str | None):
+    """'33.4242, -111.9281', '33.4242° N, 111.9281° W', '33°25\'27"N 111°55\'41"W'
+    -> (lat, lon), range-checked; anything else (an address) -> None."""
+    s = (s or "").translate(_QUOTES).strip()
+    if not s or re.search(r"[A-DF-MO-RT-VX-Za-df-mo-rt-vx-z]", s):
+        return None                     # letters other than N/S/E/W: an address
+    letters = [(m.start(), m.group().upper()) for m in re.finditer(r"[NSEWnsew]", s)]
+    if s.count(",") == 1:
+        parts = s.split(",")
+    elif len(letters) == 2:
+        (i0, _), (i1, _) = letters
+        cut = i0 + 1 if s[:i0].strip() else i1      # trailing "33N 111W" / leading "N33 W111"
+        parts = [s[:cut], s[cut:]]
+    elif not letters and s.count(",") == 0:
+        nums = _NUM.findall(s)
+        if len(nums) not in (2, 4, 6):
+            return None
+        half = len(nums) // 2
+        parts = [" ".join(nums[:half]), " ".join(nums[half:])]
+    else:
+        return None
+    a, b = _coord(parts[0]), _coord(parts[1])
+    if not a or not b:
+        return None
+    (va, ha), (vb, hb) = a, b
+    if ha in ("E", "W") or hb in ("N", "S"):
+        va, vb, ha, hb = vb, va, hb, ha              # "111°W, 33°N": longitude first
+    if (ha and ha not in ("N", "S")) or (hb and hb not in ("E", "W")):
+        return None
+    lat, lon = va, vb
     return (lat, lon) if -90 <= lat <= 90 and -180 <= lon <= 180 else None
 
 
@@ -68,15 +125,28 @@ def reverse(lat: float, lon: float) -> str:
 
 
 def geocode(query: str) -> tuple[float, float]:
-    """Address/city -> (lat, lon). Raises if not found."""
-    import geocoder
-    for provider in (geocoder.arcgis, geocoder.osm):
-        try:
-            result = provider(query)
-        except Exception:
-            continue
+    """Address/place -> (lat, lon). Raises Offline with no internet, or
+    RuntimeError if the place can't be found."""
+    import requests
+    try:
+        r = requests.get("https://photon.komoot.io/api/",
+                         params={"q": query, "limit": 1, "lang": "en"},
+                         headers={"User-Agent": "Spoofr/1.1 (macOS location utility)"}, timeout=6)
+        feats = r.json().get("features", [])
+        if feats:
+            c = feats[0]["geometry"]["coordinates"]
+            return float(c[1]), float(c[0])
+    except (requests.ConnectionError, requests.Timeout):
+        raise Offline(OFFLINE_SEARCH) from None
+    except Exception:
+        pass
+    try:
+        import geocoder
+        result = geocoder.arcgis(query)
         if result.ok and result.latlng:
             return result.latlng[0], result.latlng[1]
+    except Exception:
+        pass
     raise RuntimeError(f"Couldn’t find “{query}”. Try a more specific address or city.")
 
 

@@ -1,5 +1,8 @@
 """macui, native macOS extras for Spoofr: a menu-bar item and a panic hotkey.
 
+The menu-bar item shows a running route's progress and can pause, stop, reopen
+the window or quit, so a route keeps going with the window closed.
+
 Both are best-effort and macOS-only (pyobjc, already a pymobiledevice3 dep). Every
 action is marshalled back onto the Qt event loop through ``app._post`` so nothing
 here ever touches a widget from a Cocoa callback. If pyobjc is missing or anything
@@ -60,41 +63,73 @@ class _Controller(NSObject):
         self._status_item = item
         self.rebuildMenu()
 
+    @objc.python_method
+    def setProgress(self, text):
+        """Title next to the ◉ while a route runs: '◉ 62%', '◉ ❚❚' (paused)."""
+        if self._status_item is None:
+            return
+        title = f"◉ {text}" if text else "◉"
+        try:
+            self._status_item.button().setTitle_(title)
+        except Exception:
+            try:
+                self._status_item.setTitle_(title)
+            except Exception:
+                pass
+        if text != getattr(self, "_last_progress", None):
+            self._last_progress = text
+            self.rebuildMenu()
+
+    @objc.python_method
+    def _item(self, menu, title, action=None, enabled=True, rep=None):
+        it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, "")
+        if action:
+            it.setTarget_(self)
+        if rep is not None:
+            it.setRepresentedObject_(rep)
+        it.setEnabled_(bool(enabled and action))
+        menu.addItem_(it)
+        return it
+
     def rebuildMenu(self):
         if self._status_item is None:
             return
-        menu = NSMenu.alloc().init()
-        header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Spoofr", None, "")
-        header.setEnabled_(False)
-        menu.addItem_(header)
+        menu = NSMenu.alloc().initWithTitle_("Spoofr")
+        menu.setAutoenablesItems_(False)
+        try:
+            st = self._app.menu_state()
+        except Exception:
+            st = {"route": None, "connected": False, "spoofing": False, "name": ""}
+        r = st.get("route")
+        if r:
+            left = r.get("left")
+            mins = f" · {int(round(left / 60))} min left" if left is not None else ""
+            state = "Paused" if r.get("paused") else f"{r.get('pct', 0)}% done{mins}"
+            self._item(menu, f"Route to {r.get('name') or 'destination'}", None)
+            self._item(menu, f"   {state}", None)
+            if r.get("running"):
+                self._item(menu, "Resume Route" if r.get("paused") else "Pause Route", "pauseRoute:")
+            self._item(menu, "Stop Route…", "stopRoute:")
+        else:
+            who = st.get("name") or "iPhone"
+            self._item(menu, f"{who} connected" if st.get("connected") else "Not connected", None)
         menu.addItem_(NSMenuItem.separatorItem())
         try:
             saved = list(self._app.saved or [])
         except Exception:
             saved = []
+        for p in saved[:12]:
+            try:
+                self._item(menu, f"Go to  {p['name']}", "goTo:",
+                           rep=f"{float(p['lat'])},{float(p['lon'])},{p['name']}")
+            except Exception:
+                continue
         if saved:
-            for p in saved[:12]:
-                try:
-                    it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                        f"Go to  {p['name']}", "goTo:", "")
-                    it.setTarget_(self)
-                    it.setRepresentedObject_(f"{float(p['lat'])},{float(p['lon'])},{p['name']}")
-                    menu.addItem_(it)
-                except Exception:
-                    continue
-        else:
-            empty = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "No saved places yet", None, "")
-            empty.setEnabled_(False)
-            menu.addItem_(empty)
+            menu.addItem_(NSMenuItem.separatorItem())
+        self._item(menu, "Stop Spoofing", "restore:", enabled=True)
         menu.addItem_(NSMenuItem.separatorItem())
-        restore = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Restore real GPS", "restore:", "")
-        restore.setTarget_(self)
-        menu.addItem_(restore)
-        opn = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Open Spoofr", "openApp:", "")
-        opn.setTarget_(self)
-        menu.addItem_(opn)
+        self._item(menu, "Open Spoofr", "openApp:")
+        self._item(menu, "Quit Spoofr", "quitApp:")
         self._status_item.setMenu_(menu)
 
     def goTo_(self, sender):
@@ -105,11 +140,20 @@ class _Controller(NSObject):
             return
         self._app._post(lambda: self._app._use_place(lat, lon, name))
 
+    def pauseRoute_(self, sender):
+        self._app._post(self._app.route_pause_toggle)
+
+    def stopRoute_(self, sender):
+        self._app._post(self._app.route_stop)
+
     def restore_(self, sender):
         self._app._post(self._app.restore_real_gps)
 
     def openApp_(self, sender):
         self._app._post(self._app._raise_window)
+
+    def quitApp_(self, sender):
+        self._app._post(self._app.quit_app)
 
     # ---- panic hotkey ---------------------------------------------------
     def installHotkey(self):
